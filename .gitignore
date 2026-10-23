@@ -1,0 +1,16 @@
+# Konfigurasi framework agen (tidak di-commit)
+.claude/
+CLAUDE.md
+SETUP.md
+
+# Rahasia
+.env
+.env.*
+*.key
+*.pem
+
+# Dependensi & hasil build
+node_modules/
+dist/
+build/
+coverage/
