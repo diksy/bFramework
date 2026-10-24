@@ -1,0 +1,102 @@
+<?php
+
+declare(strict_types=1);
+
+namespace bFramework\Auth;
+
+defined('APP_BOOTED') || exit;
+
+use bFramework\Contracts\Clock;
+use bFramework\Contracts\Identity;
+use bFramework\Contracts\SessionStore;
+use bFramework\Core\Csrf;
+use bFramework\Runtime\CurrentIdentity;
+use InvalidArgumentException;
+
+/**
+ * Siklus hidup identitas di sesi. SEC-SESS-02: sesi diregenerasi + token CSRF diputar saat login
+ * dan saat ganti peran. current() memvalidasi ulang ke database (akun nonaktif/dihapus, peran dicabut,
+ * password berubah setelah sesi dibuat) sehingga pencabutan hak berlaku di request berikutnya.
+ */
+final class AuthManager
+{
+    private const AUTH_AT = '_auth_at';
+
+    public function __construct(
+        private readonly SessionStore $session,
+        private readonly CurrentIdentity $identity,
+        private readonly Csrf $csrf,
+        private readonly AccountStore $accounts,
+        private readonly Clock $clock,
+    ) {
+    }
+
+    /**
+     * @param list<string> $amr
+     * @throws NoRoles bila akun belum punya peran
+     */
+    public function login(int $userId, array $amr): Identity
+    {
+        $account = $this->accounts->find($userId);
+        if ($account === null || !$account->isActive()) {
+            throw new InvalidArgumentException('Akun tidak dapat login');
+        }
+        $roles = $this->accounts->roles($userId);
+        if ($roles === []) {
+            throw new NoRoles('Akun belum memiliki peran');
+        }
+        $this->session->start();
+        $this->session->regenerate();
+        $this->csrf->rotate();
+        $amr = array_values(array_unique(array_filter($amr, static fn($a): bool => preg_match('/^[a-z]{2,16}$/D', $a) === 1)));
+        $id = new Identity($userId, $roles, $roles[0], $amr, null);
+        $this->identity->set($id);
+        $this->session->set(self::AUTH_AT, $this->clock->now()->getTimestamp());
+        return $id;
+    }
+
+    public function current(): ?Identity
+    {
+        $id = $this->identity->get();
+        if ($id === null) {
+            return null;
+        }
+        $account = $this->accounts->find($id->userId);
+        $authAt = $this->session->get(self::AUTH_AT);
+        if ($account === null || !$account->isActive() || !is_int($authAt) || $account->pwChangedAt > $authAt) {
+            $this->logout();
+            return null;
+        }
+        $roles = $this->accounts->roles($id->userId);
+        if ($roles === []) {
+            $this->logout();
+            return null;
+        }
+        if ($roles !== $id->roles || !in_array($id->activeRole, $roles, true)) {
+            $active = in_array($id->activeRole, $roles, true) ? $id->activeRole : $roles[0];
+            $id = new Identity($id->userId, $roles, $active, $id->amr, $id->ssoSid);
+            $this->identity->set($id);
+        }
+        return $id;
+    }
+
+    /** Ganti peran aktif ke peran yang memang dimiliki (diperiksa ulang ke database). */
+    public function switchRole(string $role): Identity
+    {
+        $id = $this->current() ?? throw new InvalidArgumentException('Belum login');
+        if (!in_array($role, $this->accounts->roles($id->userId), true)) {
+            throw new \bFramework\Contracts\Forbidden('Peran tidak dimiliki');
+        }
+        $this->session->regenerate();
+        $this->csrf->rotate();
+        $new = new Identity($id->userId, $id->roles, $role, $id->amr, $id->ssoSid);
+        $this->identity->set($new);
+        return $new;
+    }
+
+    public function logout(): void
+    {
+        $this->identity->clear();
+        $this->session->destroy();
+    }
+}

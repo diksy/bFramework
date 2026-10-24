@@ -38,4 +38,28 @@ if (is_string($current) && preg_match('/^v_[a-f0-9]{6,32}$/', trim($current)) ==
     }
 }
 
-(new Kernel($router, [], $logger, $errors->page(...)))->handleGlobals()->send();
+// Perakitan autentikasi (M10) + runtime halaman (M9). HTTPS ditentukan dari SAPI saja (header proxy tidak dipercaya).
+// Belum terpasang (APP_URL kosong; installer M13 yang mengisinya): hanya rute compile + header keamanan, tanpa login.
+$hosts = Config::get('ALLOWED_HOSTS', []);
+$hosts = is_array($hosts) ? array_values(array_filter($hosts, 'is_string')) : [];
+$appUrl = Config::get('APP_URL', '');
+if (is_string($appUrl) && $appUrl !== '') {
+    $httpsEnv = $_SERVER['HTTPS'] ?? '';
+    $https = is_string($httpsEnv) && $httpsEnv !== '' && strtolower($httpsEnv) !== 'off';
+    $conn = bFramework\connectDatabase($app);
+    $auth = bFramework\buildAuth($app, $conn, $https, $logger);
+    bFramework\configureRuntime($app, $conn, $auth->session, $logger);
+    $auth->driver->registerRoutes($router);
+    $middleware = $auth->middleware($router, $hosts, Config::devMode());
+} else {
+    $auth = null;
+    $middleware = [new bFramework\Core\SecurityHeaders(bFramework\Core\Nonce::current(...))];
+}
+
+$response = (new Kernel($router, $middleware, $logger, $errors->page(...)))->handleGlobals();
+// Respons dikirim dan koneksi ditutup sebelum pekerjaan tunda (email) dijalankan.
+if ($auth !== null) {
+    $auth->deferred->respondThenRun($response);
+} else {
+    $response->send();
+}
