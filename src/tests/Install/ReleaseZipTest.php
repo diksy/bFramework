@@ -84,13 +84,24 @@ final class ReleaseZipTest extends TestCase
 
     public function test_S16_gerbang_rilis_kunci_placeholder_gagal_kecuali_flag_uji(): void
     {
-        self::assertFalse(releaseKeyConfigured(), 'repo masih berisi kunci placeholder');
+        // Gerbang diuji dengan kunci terinjeksi, tidak bergantung pada kunci di repo.
+        $bad = ['PLACEHOLDER_GANTI_DENGAN_64_HEKS', '', str_repeat('0', 64), str_repeat('z', 64), str_repeat('a', 63), str_repeat('a', 66)];
+        foreach ($bad as $hex) {
+            self::assertFalse(releaseKeyConfigured($hex), $hex);
+            [$rc, $msg] = releaseGate($hex, false);
+            self::assertSame(1, $rc, $hex);
+            self::assertStringContainsString('placeholder', $msg);
+            [$rc, $msg] = releaseGate($hex, true);
+            self::assertSame(0, $rc, $hex);
+            self::assertStringContainsString('JANGAN dirilis', $msg);
+        }
+        $good = bin2hex(sodium_crypto_sign_publickey(sodium_crypto_sign_keypair()));
+        self::assertTrue(releaseKeyConfigured($good));
+        self::assertSame([0, ''], releaseGate($good, false));
+        self::assertSame([0, ''], releaseGate($good, true));
+
         $script = dirname(__DIR__, 3) . '/tools/build-release.php';
         $zip = $this->tmp . '/gate.zip';
-        exec(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($script) . ' ' . escapeshellarg($zip) . ' 2>&1', $out, $rc);
-        self::assertSame(1, $rc, implode("\n", $out));
-        self::assertFileDoesNotExist($zip);
-        self::assertStringContainsString('placeholder', implode("\n", $out));
         $out = [];
         exec(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($script) . ' --allow-placeholder-key ' . escapeshellarg($zip) . ' 2>&1', $out, $rc);
         self::assertSame(0, $rc, implode("\n", $out));
@@ -100,6 +111,13 @@ final class ReleaseZipTest extends TestCase
         foreach ($this->entries($z) as $n) {
             self::assertDoesNotMatchRegularExpression('#^public_html/_pc/.+\.html$#', $n);
         }
+    }
+
+    public function test_S16_kunci_publik_repo_valid_gerbang_rilis(): void
+    {
+        self::assertMatchesRegularExpression('/^[a-f0-9]{64}$/D', \bFramework\Update\UpdateKey::PUBLIC_KEY_HEX);
+        self::assertTrue(\bFramework\Update\UpdateKey::configured());
+        self::assertTrue(releaseKeyConfigured());
     }
 
     private function assertManifest(\ZipArchive $z): void

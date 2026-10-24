@@ -30,9 +30,25 @@ const RELEASE_FORBIDDEN = [
 ];
 
 /** Gerbang rilis S16: true bila kunci publik update sudah dikonfigurasi (bukan placeholder). */
-function releaseKeyConfigured(): bool
+function releaseKeyConfigured(?string $hex = null): bool
 {
-    return \bFramework\Update\UpdateKey::configured();
+    return \bFramework\Update\UpdateKey::raw($hex ?? \bFramework\Update\UpdateKey::PUBLIC_KEY_HEX) !== null;
+}
+
+/**
+ * Keputusan gerbang S16 untuk kunci publik $hex (bisa diinjeksi untuk tes).
+ *
+ * @return array{0:int,1:string} [kode keluar (0 = lanjut build, 1 = gagal), pesan untuk STDERR ('' bila tidak ada)]
+ */
+function releaseGate(?string $hex, bool $allowPlaceholder): array
+{
+    if (releaseKeyConfigured($hex)) {
+        return [0, ''];
+    }
+    if (!$allowPlaceholder) {
+        return [1, "GAGAL: kunci publik update masih placeholder (src/app/core/Update/UpdateKey.php). Jalankan tools/gen-update-key.php dan isi PUBLIC_KEY_HEX; atau pakai --allow-placeholder-key hanya untuk build uji.\n"];
+    }
+    return [0, "PERINGATAN: build uji dengan kunci placeholder; JANGAN dirilis (updater menolak semua paket).\n"];
 }
 
 /** @return list<string> jalur relatif yang dimasukkan, terurut */
@@ -113,12 +129,12 @@ if (PHP_SAPI === 'cli' && isset($argv[0]) && realpath($argv[0]) === __FILE__) {
     $args = array_slice($argv, 1);
     $allow = in_array('--allow-placeholder-key', $args, true);
     $args = array_values(array_filter($args, static fn(string $a): bool => $a !== '--allow-placeholder-key'));
-    if (!releaseKeyConfigured()) {
-        if (!$allow) {
-            fwrite(STDERR, "GAGAL: kunci publik update masih placeholder (src/app/core/Update/UpdateKey.php). Jalankan tools/gen-update-key.php dan isi PUBLIC_KEY_HEX; atau pakai --allow-placeholder-key hanya untuk build uji.\n");
-            exit(1);
-        }
-        fwrite(STDERR, "PERINGATAN: build uji dengan kunci placeholder; JANGAN dirilis (updater menolak semua paket).\n");
+    [$gateRc, $gateMsg] = releaseGate(null, $allow);
+    if ($gateMsg !== '') {
+        fwrite(STDERR, $gateMsg);
+    }
+    if ($gateRc !== 0) {
+        exit($gateRc);
     }
     $out = $args[0] ?? dirname(__DIR__) . '/release.zip';
     $n = count(buildRelease(dirname(__DIR__) . '/src', $out));
