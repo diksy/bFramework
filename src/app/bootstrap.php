@@ -20,8 +20,10 @@ function configureRuntime(
     Contracts\SessionStore $session,
     ?Contracts\Logger $logger = null,
     ?Runtime\FileRefs $files = null,
+    ?Runtime\PageCacheSink $pageCache = null,
+    ?Runtime\Definitions $defs = null,
 ): void {
-    $defs = new Runtime\Definitions(new Runtime\CacheStore($appDir . '/storage/cache'));
+    $defs ??= new Runtime\Definitions(new Runtime\CacheStore($appDir . '/storage/cache'));
     Runtime\PageController::configure(
         $defs,
         new Runtime\Query($conn, $conn->grammar(), $defs->allowlist(), $logger),
@@ -35,6 +37,39 @@ function configureRuntime(
         Core\Config::devMode(),
         $logger,
         $files,
+        $pageCache,
+    );
+}
+
+/**
+ * Cache halaman (F8). Berkas HTML di <docroot>/_pc, metadata (indeks tag, generasi, kunci) di app/storage/pagecache
+ * (di luar docroot). Rute yang boleh di-cache = halaman `cache: true` + access `*` pada definisi ter-compile aktif.
+ * Satu-satunya tempat Runtime dan Cache bertemu (ARCH-03).
+ */
+function buildPageCache(string $appDir, string $docroot, Runtime\Definitions $defs, ?Contracts\Logger $logger = null): Cache\PageCache
+{
+    $cfg = Core\Config::get('page_cache', []);
+    $cfg = is_array($cfg) ? $cfg : [];
+    $limits = [];
+    foreach (['maxFiles', 'maxFileBytes', 'maxTotalBytes', 'ttl'] as $k) {
+        if (isset($cfg[$k]) && is_int($cfg[$k])) {
+            $limits[$k] = $cfg[$k];
+        }
+    }
+    return new Cache\PageCache(
+        rtrim($docroot, '/') . '/_pc',
+        $appDir . '/storage/pagecache',
+        static function () use ($defs): array {
+            $out = [];
+            foreach ($defs->pages() as $p) {
+                if (is_array($p) && ($p['cache'] ?? false) === true && ($p['access'] ?? null) === '*' && is_string($p['route'] ?? null)) {
+                    $out[] = $p['route'];
+                }
+            }
+            return $out;
+        },
+        $logger,
+        $limits,
     );
 }
 
@@ -97,6 +132,7 @@ function buildBuilder(
     Contracts\SessionStore $session,
     Core\Csrf $csrf,
     ?Contracts\Logger $logger = null,
+    ?Cache\PageCache $pageCache = null,
 ): Builder\BuilderController {
     $cfg = Core\Config::get('builder', []);
     $cfg = is_array($cfg) ? $cfg : [];
@@ -115,7 +151,13 @@ function buildBuilder(
         $clock,
         $logger,
     );
-    $compiler = new Runtime\Compiler(new Runtime\CacheStore($appDir . '/storage/cache'), $appDir . '/extensions');
+    $compiler = new Runtime\Compiler(
+        new Runtime\CacheStore($appDir . '/storage/cache'),
+        $appDir . '/extensions',
+        null,
+        $pageCache === null ? null : $pageCache->purgeAll(...), // definisi/akses berubah: buang semua cache halaman (F8)
+        $logger,
+    );
     $writer = new Builder\DefinitionWriter($appDir . '/definitions', $compiler, $conn->dialect(), $appDir . '/extensions', $logger);
     $roles = new Auth\RoleStore($conn);
     return new Builder\BuilderController(

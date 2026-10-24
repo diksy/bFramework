@@ -12,7 +12,7 @@ final class BootTest extends TestCase
 
     public function test_ARCH_01_docroot_hanya_index_dan_assets(): void
     {
-        $allowed = ['index.php', 'assets', '.htaccess'];
+        $allowed = ['index.php', 'assets', '.htaccess', '_pc']; // _pc = cache halaman statis (M16)
         $found = array_values(array_diff((array) scandir(self::SRC . '/public_html'), ['.', '..']));
         self::assertSame([], array_values(array_diff($found, $allowed)));
     }

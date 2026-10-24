@@ -1,0 +1,46 @@
+# Versi didukung: Apache 2.4 (utama) dan 2.2 tanpa 500; direktif opsional dibungkus <IfModule>.
+# F8 cache halaman: HANYA berkas statis .html. Tidak ada eksekusi PHP/CGI di sini (SEC-PER-02 untuk _pc/).
+<IfModule mod_php.c>
+    php_flag engine off
+</IfModule>
+<IfModule mod_php7.c>
+    php_flag engine off
+</IfModule>
+<IfModule mod_php8.c>
+    php_flag engine off
+</IfModule>
+<IfModule mod_mime.c>
+    RemoveHandler .php .phtml .php3 .php4 .php5 .php7 .php8 .phar
+    RemoveType .php .phtml .php3 .php4 .php5 .php7 .php8 .phar
+</IfModule>
+Options -ExecCGI -Indexes
+
+# Selain .html (termasuk dotfile .tmp-*, .php, .json) ditolak.
+<FilesMatch "^(?!.+\.html$)">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>
+<IfModule mod_mime.c>
+    ForceType text/html
+</IfModule>
+
+# SEC-PER-03 untuk berkas statis (PHP tidak jalan, jadi header dipasang di sini). Halaman cache tanpa nonce:
+# script-src 'self' cukup. Sinkron dengan Core\SecurityHeaders; HSTS hanya bila HTTPS.
+<IfModule mod_headers.c>
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set Referrer-Policy "strict-origin-when-cross-origin"
+    Header always set X-Frame-Options "DENY"
+    Header always set Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+    # HSTS hanya bila HTTPS; env= valid di Apache 2.2 dan 2.4.
+    <IfModule mod_setenvif.c>
+        SetEnvIf HTTPS on BF_HTTPS=1
+        SetEnvIf X-Forwarded-Proto https BF_HTTPS=1
+        Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains" env=BF_HTTPS
+    </IfModule>
+    Header always set Cache-Control "no-cache"
+</IfModule>
