@@ -9,7 +9,7 @@ use PHPUnit\Framework\TestCase;
 final class LayerDependencyTest extends TestCase
 {
     /** Setara (Auth/Upload/Cache, Install/Builder) juga tidak boleh saling `use`. Folder tak terdaftar = tes gagal. */
-    private const LAYERS = ['Contracts' => 0, 'Core' => 1, 'Runtime' => 2, 'Auth' => 3, 'Upload' => 3, 'Install' => 4, 'Builder' => 4, 'Sso' => 4, 'Cache' => 3];
+    private const LAYERS = ['Contracts' => 0, 'Core' => 1, 'Runtime' => 2, 'Auth' => 3, 'Upload' => 3, 'Install' => 4, 'Builder' => 4, 'Sso' => 4, 'Cache' => 3, 'Update' => 4];
 
     public function test_ARCH_03_tidak_ada_use_dari_lapisan_bawah_ke_atas(): void
     {

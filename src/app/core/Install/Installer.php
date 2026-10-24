@@ -283,6 +283,15 @@ final class Installer
                 $m = new Migrator($conn, $conn->grammar());
                 $m->apply($m->planCreate(FilesTable::spec()));
             }
+            // Tabel `migrations` (versi skema core) untuk updater M17; spesifikasi sama dengan Update\UpdateMigrations::spec().
+            $exists->execute(['migrations']);
+            if ($exists->fetchColumn() === false) {
+                $m = new Migrator($conn, $conn->grammar());
+                $m->apply($m->planCreate(new \bFramework\Runtime\TableSpec('migrations', [
+                    'version' => new \bFramework\Runtime\ColumnSpec(\bFramework\Contracts\FieldType::String, false, null, 64, unique: true),
+                    'applied_at' => new \bFramework\Runtime\ColumnSpec(\bFramework\Contracts\FieldType::String, false, null, 32),
+                ])));
+            }
             $q = new Query($conn, $conn->grammar(), AuthTables::allowlist());
             foreach (['admin' => 'Administrator', 'staf' => 'Staf'] as $name => $label) {
                 if ($q->select(AuthTables::ROLES, ['id'], new Where([['name', '=', $name]]), null, 1, 0) === []) {

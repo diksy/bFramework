@@ -29,6 +29,15 @@ $errors = ErrorHandler::register(
 // (rute lain dialihkan/503) dan hanya dengan install_token pemilik. Sudah terpasang: /install = 404.
 $httpsEnv = $_SERVER['HTTPS'] ?? '';
 $https = is_string($httpsEnv) && $httpsEnv !== '' && strtolower($httpsEnv) !== 'off';
+// Mode pemeliharaan singkat selama update diterapkan (M17); kedaluwarsa 10 menit agar kegagalan proses tidak mengunci selamanya.
+$maint = $app . '/storage/maintenance';
+if (is_file($maint) && time() - (int) @filemtime($maint) < 600) {
+    http_response_code(503);
+    header('Retry-After: 60');
+    header('Cache-Control: no-store');
+    echo 'Sedang dalam pemeliharaan. Coba lagi sebentar.';
+    return;
+}
 $installer = new bFramework\Install\Installer($app, __DIR__, new bFramework\Auth\SystemClock(), $logger);
 $appUrl = Config::get('APP_URL', '');
 $configured = is_string($appUrl) && $appUrl !== '';
@@ -98,6 +107,7 @@ if (random_int(1, 200) === 1) {
         $pageCache->gc(); // kedaluwarsa/yatim; halaman statis tidak menjalankan PHP, jadi dipicu dari request lain
     });
 }
+bFramework\buildUpdateStatus($app, $auth, $defs, $logger)->registerRoutes($router);
 $auth->driver->registerRoutes($router);
 $auth->admin?->registerRoutes($router);
 // Halaman cache anonim (GET tanpa query/cookie sesi) tidak memulai sesi sama sekali, jadi tanpa Set-Cookie (F8).
