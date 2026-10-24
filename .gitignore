@@ -14,3 +14,7 @@ node_modules/
 dist/
 build/
 coverage/
+
+prototype/app/storage/
+vendor/
+.phpunit.cache/
