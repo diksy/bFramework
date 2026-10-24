@@ -45,7 +45,8 @@ final class Router
 
     /**
      * Tabel hasil compile (hanya array/skalar, CACHE-08): list dari
-     * ['method'=>string,'pattern'=>string,'handler'=>"Kelas::metodeStatis",'csrf'=>bool,'name'=>?string].
+     * ['method'=>string,'pattern'=>string,'handler'=>"Kelas::metodeStatis",'csrf'=>bool,'name'=>?string,'page'=>?string].
+     * Bila `page` ada, handler dipanggil (Request, array $params, string $page).
      *
      * @param list<array<string,mixed>> $table
      */
@@ -61,12 +62,17 @@ final class Router
                 throw new InvalidArgumentException('Baris route compiled tidak valid');
             }
             $name = $row['name'] ?? null;
+            $page = $row['page'] ?? null;
+            if ($page !== null && (!is_string($page) || preg_match('/^[a-z][a-z0-9_-]{0,40}$/D', $page) !== 1)) {
+                throw new InvalidArgumentException('Kunci page pada baris route tidak valid');
+            }
             $opts = new RouteOpts(($row['csrf'] ?? true) !== false, is_string($name) ? $name : null);
-            $r->add($method, $pattern, static function (Request $req, array $params) use ($handler): Response {
+            $r->add($method, $pattern, static function (Request $req, array $params) use ($handler, $page): Response {
                 if (!is_callable($handler)) {
                     throw new NotFound('Handler tidak ditemukan');
                 }
-                $res = $handler($req, $params);
+                // Kunci `page` diteruskan sebagai argumen ke-3 (nama halaman tepercaya dari tabel compile).
+                $res = $page === null ? $handler($req, $params) : $handler($req, $params, $page);
                 if (!$res instanceof Response) {
                     throw new \UnexpectedValueException('Handler harus mengembalikan Response');
                 }

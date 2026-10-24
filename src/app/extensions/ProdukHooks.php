@@ -2,8 +2,6 @@
 
 declare(strict_types=1);
 
-namespace bFramework\Extensions;
-
 defined('APP_BOOTED') || exit;
 
 /** Contoh hooks developer untuk model produk (kode tepercaya, dummy). */

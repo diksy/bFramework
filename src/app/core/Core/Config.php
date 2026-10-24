@@ -41,6 +41,25 @@ final class Config
         return array_key_exists($key, self::$data) ? self::$data[$key] : $default;
     }
 
+    /** Nilai APP_ENV yang berarti mode dev (allowlist; fail-closed). */
+    public const DEV_ENVS = ['dev', 'development', 'local', 'test'];
+
+    /**
+     * Satu-satunya penentu mode dev. Allowlist: hanya nilai (trim + lowercase) di DEV_ENVS = dev;
+     * tidak terset, kosong, bukan string, atau nilai lain apa pun = produksi.
+     */
+    public static function isDevEnv(mixed $value): bool
+    {
+        return is_string($value) && in_array(strtolower(trim($value)), self::DEV_ENVS, true);
+    }
+
+    /** Mode dev dari environment variable APP_ENV; bila tidak terset, dari config APP_ENV. */
+    public static function devMode(): bool
+    {
+        $env = getenv('APP_ENV');
+        return self::isDevEnv($env !== false ? $env : self::get('APP_ENV'));
+    }
+
     /**
      * Salinan aman untuk ekspor/log: tanpa kunci *_PASSWORD, *_SECRET, APP_KEY (tidak peka huruf besar-kecil).
      *

@@ -17,7 +17,7 @@ $app = dirname(__DIR__) . '/app';
 Config::load($app . '/config/config.php');
 
 // Log di app/storage/logs (di luar docroot), rotasi 5 MB x 5 berkas (SEC-LOG-01).
-$production = Config::get('APP_ENV', 'production') !== 'development';
+$production = !Config::devMode();
 $logger = new RotatingFileLogger($app . '/storage/logs', 5 * 1024 * 1024, 5);
 $errors = ErrorHandler::register(
     $production,
