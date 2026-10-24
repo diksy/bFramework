@@ -267,9 +267,11 @@ final class UpdateTest extends TestCase
 
     public function test_SEC_UPD_01_key_placeholder_atau_kosong_menolak_semua_fail_closed(): void
     {
-        self::assertNull(UpdateKey::raw());
-        self::assertFalse(UpdateKey::configured());
+        self::assertNull(UpdateKey::raw('PLACEHOLDER_GANTI_DENGAN_64_HEKS'));
         self::assertNull(UpdateKey::raw(str_repeat('0', 64)));
+        self::assertNull(UpdateKey::raw(str_repeat('a', 63)));
+        self::assertNull(UpdateKey::raw(str_repeat('a', 65)));
+        self::assertNull(UpdateKey::raw(strtoupper(bin2hex($this->pk))));
         self::assertNull(UpdateKey::raw(''));
         self::assertNull(UpdateKey::raw('zz' . str_repeat('a', 62)));
         self::assertNotNull(UpdateKey::raw(bin2hex($this->pk)));

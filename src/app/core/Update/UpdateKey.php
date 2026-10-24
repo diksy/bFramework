@@ -15,7 +15,7 @@ defined('APP_BOOTED') || exit;
  */
 final class UpdateKey
 {
-    public const PUBLIC_KEY_HEX = 'PLACEHOLDER_GANTI_DENGAN_64_HEKS_HASIL_GEN_UPDATE_KEY';
+    public const PUBLIC_KEY_HEX = '571b21c6c189a27b1ac1be5c451ee2ede76ce6f3a89232d7df121b28a45de16f';
 
     /** @return ?string 32 byte mentah, atau null bila placeholder/kosong/tidak valid (fail-closed) */
     public static function raw(?string $hex = null): ?string

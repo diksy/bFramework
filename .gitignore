@@ -23,3 +23,7 @@ vendor/
 # Database SQLite (data runtime/tes)
 *.sqlite
 *.sqlite-journal
+
+# Artefak build rilis (tools/build-release.php)
+release.zip
+/release*.zip

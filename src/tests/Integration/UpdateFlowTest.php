@@ -243,6 +243,11 @@ final class UpdateFlowTest extends TestCase
         // Tanpa kunci tertanam (placeholder) semua paket ditolak, walau tanda tangan benar.
         $b = KernelApp::installed();
         try {
+            $kf = $b->root . '/app/core/Update/UpdateKey.php';
+            $ksrc = (string) file_get_contents($kf);
+            $knew = (string) preg_replace("/PUBLIC_KEY_HEX = '[^']*'/", "PUBLIC_KEY_HEX = 'PLACEHOLDER_UJI'", $ksrc);
+            self::assertNotSame($ksrc, $knew);
+            file_put_contents($kf, $knew);
             file_put_contents($b->root . '/MANIFEST.sha256', $this->manifestOf($b->root, []));
             $pkg = $this->package($b, $good);
             [$code, $out] = $this->cli($b, 'apply', $pkg, '--yes');
