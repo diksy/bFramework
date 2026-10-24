@@ -17,6 +17,7 @@ coverage/
 
 prototype/app/storage/
 vendor/
+!/src/app/core/vendor/
 .phpunit.cache/
 
 # Database SQLite (data runtime/tes)

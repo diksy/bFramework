@@ -97,7 +97,7 @@ final class BuilderTest extends TestCase
     }
 
     /** @param array<string,mixed> $opts */
-    private function kernel(bool $dev, array $opts = []): Kernel
+    private function kernel(bool $dev, array $opts = [], ?\Closure $ssoTest = null): Kernel
     {
         $identity = new CurrentIdentity($this->session);
         $gate = new BuilderGate(
@@ -122,6 +122,7 @@ final class BuilderTest extends TestCase
             static fn(): array => ['admin', 'staf'],
             static fn(Identity $w): array => [],
             $this->log,
+            $ssoTest,
         );
         $router = new Router();
         $ctl->registerRoutes($router);
@@ -169,6 +170,31 @@ final class BuilderTest extends TestCase
     }
 
     // ---------- SEC-BLD-01 ----------
+
+    public function test_SSO_21_tes_koneksi_admin_csrf_dan_produksi_404(): void
+    {
+        $seen = [];
+        $fn = static function (string $issuer) use (&$seen): array {
+            $seen[] = $issuer;
+            return ['ok' => false, 'steps' => [['name' => 'discovery', 'ok' => false, 'msg' => 'Issuer pada discovery tidak sama persis dengan issuer di konfigurasi.']]];
+        };
+        $k = $this->kernel(true, [], $fn);
+        $r = $this->req($k, 'POST', '/_builder/api/sso-test', ['issuer' => 'https://sso.contoh.test']);
+        self::assertSame(200, $r->status);
+        self::assertSame(['https://sso.contoh.test'], $seen);
+        self::assertStringContainsString('tidak sama persis', $r->body);
+        self::assertSame(419, $this->req($k, 'POST', '/_builder/api/sso-test', ['issuer' => 'https://x.test'], false)->status);
+        self::assertSame(422, $this->req($k, 'POST', '/_builder/api/sso-test', ['issuer' => ['bukan-string']])->status);
+        self::assertSame(422, $this->req($this->kernel(true), 'POST', '/_builder/api/sso-test', ['issuer' => 'https://x.test'])->status, 'tanpa penguji = tidak tersedia');
+        $this->login('staf');
+        self::assertSame(403, $this->req($this->kernel(true, [], $fn), 'POST', '/_builder/api/sso-test', ['issuer' => 'https://x.test'])->status);
+        $this->login('admin');
+        self::assertSame(404, $this->req($this->kernel(false, [], $fn), 'POST', '/_builder/api/sso-test', ['issuer' => 'https://x.test'])->status);
+        $boom = $this->req($this->kernel(true, [], static function (string $i): array {
+            throw new \RuntimeException('rahasia-internal');
+        }), 'POST', '/_builder/api/sso-test', ['issuer' => 'https://x.test']);
+        self::assertStringNotContainsString('rahasia-internal', $boom->body);
+    }
 
     public function test_SEC_BLD_01_produksi_default_semua_rute_404(): void
     {

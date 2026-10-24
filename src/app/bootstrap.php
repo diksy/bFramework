@@ -143,6 +143,10 @@ function buildBuilder(
             }
         },
         $logger,
+        static function (string $issuer) use ($logger): array { // SSO-21: kode SSO dimuat hanya saat tombol ditekan
+            $port = parse_url($issuer, PHP_URL_PORT);
+            return Sso\OidcClient::probe(new Core\HttpClient($logger, null, 1048576, [], is_int($port) ? [443, $port] : [443]), $issuer);
+        },
     );
 }
 
@@ -202,11 +206,16 @@ function buildAuth(string $appDir, Runtime\Connection $conn, bool $https, ?Contr
     $deferred = new Auth\Deferred($logger);
     $mailer = Auth\Mailer::fromConfig($smtp, $logger);
     $tokens = new Auth\OneTimeToken($conn, $clock);
-    $driver = new Auth\LocalDriver(
+    $hasher = new Auth\PasswordHasher();
+    $throttle = new Auth\LoginThrottle(new Core\RateLimiter($appDir . '/storage/ratelimit', $clock));
+    [$mode, $ssoRaw] = ssoSettings($appDir, $authCfg);
+    $views = new Core\Template($appDir . '/core/Auth/views', $appDir . '/storage/cache/views');
+    $layout = new Core\Template($appDir . '/core/Core/views', $appDir . '/storage/cache/views');
+    $local = new Auth\LocalDriver(
         $manager,
         $accounts,
-        new Auth\PasswordHasher(),
-        new Auth\LoginThrottle(new Core\RateLimiter($appDir . '/storage/ratelimit', $clock)),
+        $hasher,
+        $throttle,
         $remember,
         $tokens,
         $twofa,
@@ -214,15 +223,17 @@ function buildAuth(string $appDir, Runtime\Connection $conn, bool $https, ?Contr
         $deferred,
         $session,
         $csrf,
-        new Core\Template($appDir . '/core/Auth/views', $appDir . '/storage/cache/views'),
-        new Core\Template($appDir . '/core/Core/views', $appDir . '/storage/cache/views'),
+        $views,
+        $layout,
         $clock,
         [
             'appUrl' => Core\Config::get('APP_URL', ''),
             'allowHttp' => Core\Config::devMode(),
-            'registration' => ($authCfg['registration'] ?? false) === true, // AUTH-08: mati secara default
+            'registration' => $mode === 'local' && ($authCfg['registration'] ?? false) === true, // AUTH-08: mati secara default
             'defaultRole' => $authCfg['default_role'] ?? 'staf',
             'from' => Core\Config::get('MAIL_FROM', 'noreply@example.invalid'),
+            'breakGlass' => $mode === 'hybrid', // SSO-01
+            'loginPath' => $authCfg['break_glass_path'] ?? '/auth/break-glass',
         ],
         $logger,
     );
@@ -254,5 +265,106 @@ function buildAuth(string $appDir, Runtime\Connection $conn, bool $https, ?Contr
         ],
         $logger,
     );
+    // M15 (SSO-19): kode SSO + library JWT hanya dimuat/dipasang bila driver bikinin_sso atau hybrid.
+    $driver = $mode === 'local'
+        ? $local
+        : buildSso($appDir, $conn, $mode, $ssoRaw, $key, $manager, $users, $accounts, $hasher, $throttle, $session, $csrf, $views, $layout, $clock, $mode === 'hybrid' ? $local : null, $logger);
     return new Auth\AuthKit($session, $jar, $csrf, $manager, $remember, $driver, $deferred, $admin);
+}
+
+/**
+ * Mode auth + blok sso gabungan: config.php (`auth.driver`, `auth.sso.*`, termasuk client_secret) menimpa
+ * definisi ter-compile `auth.json` (tanpa rahasia). env SSO_CLIENT_SECRET menimpa client_secret. Nilai driver
+ * tak dikenal dianggap `local`.
+ *
+ * @param array<mixed> $authCfg
+ * @return array{0:string,1:array<string,mixed>}
+ */
+function ssoSettings(string $appDir, array $authCfg): array
+{
+    $compiled = [];
+    try {
+        $c = (new Runtime\Definitions(new Runtime\CacheStore($appDir . '/storage/cache')))->auth();
+        $compiled = is_array($c) ? $c : [];
+    } catch (\Throwable) {
+        // cache belum dibangun
+    }
+    $driver = $authCfg['driver'] ?? $compiled['driver'] ?? 'local';
+    $driver = is_string($driver) && in_array($driver, ['local', 'bikinin_sso', 'hybrid'], true) ? $driver : 'local';
+    $sso = array_merge(
+        is_array($compiled['sso'] ?? null) ? $compiled['sso'] : [],
+        is_array($authCfg['sso'] ?? null) ? $authCfg['sso'] : [],
+    );
+    $env = getenv('SSO_CLIENT_SECRET');
+    if ($env !== false && $env !== '') {
+        $sso['client_secret'] = $env;
+    }
+    /** @var array<string,mixed> $sso */
+    return [$driver, $sso];
+}
+
+/**
+ * Perakitan driver SSO (M15). Konfigurasi tidak sah -> driver tetap dipasang dalam keadaan "tidak tersedia"
+ * (fail-closed: tidak jatuh kembali ke login lokal). Refresh token hanya bila APP_KEY >= 32 karakter.
+ *
+ * @param 'bikinin_sso'|'hybrid'|string $mode
+ * @param array<string,mixed> $ssoRaw
+ */
+function buildSso(
+    string $appDir,
+    Runtime\Connection $conn,
+    string $mode,
+    array $ssoRaw,
+    mixed $appKey,
+    Auth\AuthManager $manager,
+    Auth\DbUserStore $users,
+    Auth\AccountStore $accounts,
+    Auth\PasswordHasher $hasher,
+    Auth\LoginThrottle $throttle,
+    Core\FileSessionStore $session,
+    Core\Csrf $csrf,
+    Core\Template $views,
+    Core\Template $layout,
+    Contracts\Clock $clock,
+    ?Auth\AuthDriver $local,
+    ?Contracts\Logger $logger,
+): Sso\SsoDriver {
+    $marker = $appDir . '/storage/cache/sso_schema';
+    if (!is_file($marker)) {
+        try {
+            Sso\SsoTables::install($conn);
+            @file_put_contents($marker, '1');
+        } catch (\Throwable) {
+            $logger?->error('Tabel SSO tidak dapat dibuat');
+        }
+    }
+    $appUrl = Core\Config::get('APP_URL', '');
+    $cfg = Sso\SsoConfig::from($ssoRaw, is_string($appUrl) ? $appUrl : '');
+    $mode = $mode === 'hybrid' ? 'hybrid' : 'bikinin_sso';
+    $sids = new Sso\SidMap($conn, $clock, $logger);
+    $vault = is_string($appKey) && strlen($appKey) >= 32
+        ? new Sso\RefreshVault($conn, new Auth\SecretVault($appKey), $clock, $appDir . '/storage/locks', $logger)
+        : null;
+    $oidc = null;
+    $backchannel = null;
+    $claims = null;
+    if ($cfg === null) {
+        $logger?->error('Konfigurasi SSO tidak lengkap/tidak sah; SSO dinonaktifkan sementara');
+    } else {
+        $port = parse_url($cfg->issuer, PHP_URL_PORT);
+        $http = new Core\HttpClient($logger, null, 1048576, [], is_int($port) ? [443, $port] : [443]);
+        $cache = new Sso\FileCache($appDir . '/storage/sso', $clock);
+        $oidc = new Sso\OidcClient($http, $cache, $clock, $cfg, new Sso\FirebaseJwtVerifier(), $logger);
+        $claims = new Sso\ClaimsValidator($cfg->issuer, $cfg->clientId);
+        $backchannel = new Sso\BackchannelHandler(
+            $oidc,
+            $claims,
+            new Sso\JtiStore($appDir . '/storage/sso/jti', $clock),
+            $sids,
+            $vault,
+            $clock,
+            $logger,
+        );
+    }
+    return new Sso\SsoDriver($mode, $cfg, $oidc, $backchannel, $claims, $manager, $users, $accounts, $sids, $vault, $hasher, $throttle, $session, $csrf, $views, $layout, $clock, $local, $logger);
 }

@@ -9,7 +9,7 @@ use PHPUnit\Framework\TestCase;
 final class LayerDependencyTest extends TestCase
 {
     /** Setara (Auth/Upload, Install/Builder) juga tidak boleh saling `use`. Folder tak terdaftar = tes gagal. */
-    private const LAYERS = ['Contracts' => 0, 'Core' => 1, 'Runtime' => 2, 'Auth' => 3, 'Upload' => 3, 'Install' => 4, 'Builder' => 4];
+    private const LAYERS = ['Contracts' => 0, 'Core' => 1, 'Runtime' => 2, 'Auth' => 3, 'Upload' => 3, 'Install' => 4, 'Builder' => 4, 'Sso' => 4];
 
     public function test_ARCH_03_tidak_ada_use_dari_lapisan_bawah_ke_atas(): void
     {
@@ -63,7 +63,9 @@ final class LayerDependencyTest extends TestCase
         self::assertNotFalse($root);
         $it = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($root, \FilesystemIterator::SKIP_DOTS));
         foreach ($it as $f) {
-            if ($f->getExtension() !== 'php' || $f->getFilename() === 'bootstrap.php') {
+            // core/vendor: pustaka pihak ketiga dipertahankan persis seperti rilis resmi (hash di decisions.md) agar dapat
+            // diverifikasi; hanya mendeklarasikan kelas (tanpa efek samping) dan berada di bawah app/ yang deny-all (ARCH-01).
+            if ($f->getExtension() !== 'php' || $f->getFilename() === 'bootstrap.php' || str_contains($f->getPathname(), '/core/vendor/')) {
                 continue;
             }
             self::assertStringContainsString(

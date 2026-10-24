@@ -20,7 +20,7 @@ use InvalidArgumentException;
 final class AccountStore
 {
     private const COLS = ['id', 'email', 'name', 'password_hash', 'status', 'email_verified_at', 'totp_enabled',
-        'totp_secret', 'totp_last_step', 'recovery_codes', 'pw_changed_at'];
+        'totp_secret', 'totp_last_step', 'recovery_codes', 'pw_changed_at', 'break_glass', 'sso_sub'];
 
     private readonly Query $q;
 
@@ -175,6 +175,8 @@ final class AccountStore
             $r['totp_last_step'] === null ? null : (int) $r['totp_last_step'],
             $codes,
             (int) $r['pw_changed_at'],
+            (int) $r['break_glass'] === 1,
+            is_string($r['sso_sub'] ?? null) && $r['sso_sub'] !== '' ? $r['sso_sub'] : null,
         );
     }
 

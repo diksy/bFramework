@@ -590,12 +590,23 @@
     if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(text).then(ok, ok); return; }
     var t = h('textarea', {}, text); document.body.appendChild(t); t.select(); try { document.execCommand('copy'); } catch (e) { /* abaikan */ } t.remove(); ok();
   }
+  /* SSO-21: hasil ditulis lewat textContent (pesan dari server tidak pernah dianggap HTML). */
+  function testSso(issuer, out) {
+    out.textContent = 'Menguji...';
+    api('/_builder/api/sso-test', { issuer: issuer }).then(function (r) {
+      out.textContent = '';
+      var steps = r.body && Array.isArray(r.body.steps) ? r.body.steps : [];
+      if (!steps.length) { out.textContent = (r.body && r.body.error) || 'Tes gagal.'; return; }
+      steps.forEach(function (s) { out.appendChild(h('p', { class: s.ok ? 'muted' : 'err' }, (s.ok ? 'OK - ' : 'GAGAL - ') + s.name + ': ' + s.msg)); });
+    });
+  }
   function panelAuth() {
     var d = W.auth.data; d.sso = d.sso || {};
     var sso = d.sso; var isLocal = d.driver === 'local';
     function field(label, key, type) {
       return h('div', { class: 'field' }, h('label', {}, label), h('input', { type: type || 'text', value: sso[key] === undefined ? '' : sso[key], onchange: function (ev) { sso[key] = type === 'number' ? Number(ev.target.value) : ev.target.value.trim(); render(); } }));
     }
+    var ssoOut = h('div', { class: 'ssotest' });
     var urls = h('div', {}, h('p', { class: 'muted' }, 'Daftarkan URL ini ke admin BikininSSO:'));
     [['Callback login', S.urls.callback], ['Post-logout', S.urls.postLogout], ['Back-channel logout', S.urls.backchannel]].forEach(function (u) {
       var full = location.origin + u[1];
@@ -616,7 +627,9 @@
       h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: !!sso.offline_access, onchange: function (ev) { sso.offline_access = ev.target.checked; render(); } }), 'Minta offline_access'),
       h('p', { class: 'muted' }, 'client_secret tidak disimpan di sini; isi di config/config.php (di luar docroot).'),
       urls,
-      h('p', { class: 'muted' }, 'Tes koneksi SSO tersedia setelah modul SSO (M15) terpasang.'))));
+      h('div', { class: 'toolbar' }, h('button', { class: 'btn', type: 'button', onclick: function () { testSso(sso.issuer || '', ssoOut); } }, 'Tes koneksi'),
+        h('span', { class: 'muted' }, ' memeriksa discovery + JWKS (tanpa client_secret)')),
+      ssoOut)));
   }
 
   /* ---------- boot ---------- */

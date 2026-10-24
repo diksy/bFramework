@@ -22,6 +22,8 @@ final readonly class Account
         public ?int $totpLastStep,
         public array $recoveryHashes,
         public int $pwChangedAt,
+        public bool $breakGlass = false,
+        public ?string $ssoSub = null,
     ) {
     }
 
