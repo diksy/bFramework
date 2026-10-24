@@ -530,6 +530,8 @@ function buildSso(
         : null;
     $oidc = null;
     $backchannel = null;
+    // S20: sso.backchannel_rate = [maks, detik]; bentuk/rentang tak sah memakai bawaan 30/60.
+    $bcRate = Sso\BackchannelHandler::rateFromConfig($ssoRaw['backchannel_rate'] ?? null, $logger);
     $claims = null;
     if ($cfg === null) {
         $logger?->error('Konfigurasi SSO tidak lengkap/tidak sah; SSO dinonaktifkan sementara');
@@ -548,6 +550,7 @@ function buildSso(
             $clock,
             $logger,
             new Core\RateLimiter($appDir . '/storage/ratelimit', $clock),
+            ...$bcRate,
         );
     }
     return new Sso\SsoDriver($mode, $cfg, $oidc, $backchannel, $claims, $manager, $users, $accounts, $sids, $vault, $hasher, $throttle, $session, $csrf, $views, $layout, $clock, $local, $logger);

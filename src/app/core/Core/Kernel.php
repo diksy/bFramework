@@ -29,7 +29,7 @@ final class Kernel
         try {
             $request = $factory !== null ? $factory() : Request::fromGlobals();
         } catch (HttpException $e) {
-            return $this->early($this->errorResponse($e->status));
+            return $this->early(self::withHeaders($this->errorResponse($e->status), $e->headers));
         } catch (Throwable $e) {
             $this->logger?->error('Request gagal dibentuk', ErrorHandler::context($e));
             return $this->early($this->errorResponse(400));
@@ -69,11 +69,20 @@ final class Kernel
         try {
             return $fn();
         } catch (HttpException $e) {
-            return $this->errorResponse($e->status);
+            return self::withHeaders($this->errorResponse($e->status), $e->headers);
         } catch (Throwable $e) {
             $this->logger?->error('Unhandled exception', ErrorHandler::context($e));
             return $this->errorResponse(500);
         }
+    }
+
+    /** @param array<string,string> $headers */
+    private static function withHeaders(Response $res, array $headers): Response
+    {
+        foreach ($headers as $k => $v) {
+            $res = $res->withHeader($k, $v);
+        }
+        return $res;
     }
 
     private function errorResponse(int $status): Response

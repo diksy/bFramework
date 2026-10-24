@@ -611,7 +611,11 @@ final class LocalDriver implements AuthDriver
             return Response::redirect('/auth/2fa');
         }
         if (!$this->verifyPassword($acc, self::str($r->post['password'] ?? null))) {
-            return $this->confirmPage($secret, $acc->email, ['Password salah.'], 401);
+            // S4: secret tertunda hanya ditampilkan setelah password valid.
+            return $this->panel('Aktifkan 2FA', 401, [
+                'errors' => ['Password salah.'],
+                'forms' => [['id' => 'c', 'action' => '/auth/2fa/confirm', 'submit' => 'Konfirmasi', 'fields' => $this->confirmFields()]],
+            ], true);
         }
         $codes = $this->twofa->confirm($acc->id, self::str($r->post['code'] ?? null));
         if ($codes === null) {
@@ -736,8 +740,14 @@ final class LocalDriver implements AuthDriver
                 'Lalu masukkan kode 6 digit yang ditampilkan untuk konfirmasi.',
             ],
             'forms' => [['id' => 'c', 'action' => '/auth/2fa/confirm', 'submit' => 'Konfirmasi',
-                'fields' => [self::field('password', 'Password', 'password', 'current-password'), self::field('code', 'Kode', 'text', 'one-time-code')]]],
+                'fields' => $this->confirmFields()]],
         ], true);
+    }
+
+    /** @return list<array<string,mixed>> */
+    private function confirmFields(): array
+    {
+        return [self::field('password', 'Password', 'password', 'current-password'), self::field('code', 'Kode', 'text', 'one-time-code')];
     }
 
     private function invalidLink(): Response

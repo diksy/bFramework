@@ -29,6 +29,9 @@ final class BackchannelHandler
         private readonly Clock $clock,
         private readonly ?Logger $logger = null,
         private readonly ?RateLimiter $limiter = null,
+        /** S20: batas per IP per jendela (config sso.backchannel_rate = [maks, detik]). */
+        private readonly int $rateMax = self::RATE_MAX,
+        private readonly int $rateWindow = self::RATE_WINDOW,
     ) {
     }
 
@@ -36,13 +39,30 @@ final class BackchannelHandler
     public const RATE_MAX = 30;
     public const RATE_WINDOW = 60;
 
+    /**
+     * S20: baca sso.backchannel_rate = [maks, detik]. Tidak ada -> bawaan tanpa log; ada tapi tidak sah -> bawaan + satu peringatan.
+     * @return array{0:int,1:int}
+     */
+    public static function rateFromConfig(mixed $cfg, ?Logger $logger = null): array
+    {
+        if ($cfg === null) {
+            return [self::RATE_MAX, self::RATE_WINDOW];
+        }
+        if (is_array($cfg) && count($cfg) === 2 && is_int($cfg[0] ?? null) && is_int($cfg[1] ?? null)
+            && $cfg[0] >= 1 && $cfg[0] <= 10000 && $cfg[1] >= 1 && $cfg[1] <= 86400) {
+            return [$cfg[0], $cfg[1]];
+        }
+        $logger?->warning('sso.backchannel_rate tidak sah; memakai bawaan 30/60');
+        return [self::RATE_MAX, self::RATE_WINDOW];
+    }
+
     public function handle(Request $r): Response
     {
         // Paling murah dulu: rate limit per IP (tanpa fetch), lalu ukuran, format JWT, header (alg/kid), baru verifikasi.
-        if ($this->limiter !== null && !$this->limiter->hit('sso-bc:' . self::ipKey($r->remoteAddr), self::RATE_MAX, self::RATE_WINDOW)) {
+        if ($this->limiter !== null && !$this->limiter->hit('sso-bc:' . self::ipKey($r->remoteAddr), $this->rateMax, $this->rateWindow)) {
             $this->logger?->warning('Back-channel logout dibatasi (rate limit)');
             return Response::json(['error' => 'too_many_requests'], 429)
-                ->withHeader('Cache-Control', 'no-store')->withHeader('Retry-After', (string) self::RATE_WINDOW);
+                ->withHeader('Cache-Control', 'no-store')->withHeader('Retry-After', (string) $this->rateWindow);
         }
         $token = $r->post['logout_token'] ?? null;
         if (!is_string($token) || $token === '' || strlen($token) > 8192) {

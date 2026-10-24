@@ -93,7 +93,8 @@ final class Router
     {
         $hit = $this->match($req);
         if ($hit === null) {
-            throw $this->anyPathMatch($req->path) ? new HttpException(405, 'Metode tidak diizinkan') : new NotFound();
+            $allow = $this->allowedMethods($req->path);
+            throw $allow !== [] ? new HttpException(405, 'Metode tidak diizinkan', ['Allow' => implode(', ', $allow)]) : new NotFound();
         }
         [$route, $params] = $hit;
         $res = ($route['handler'])($req, $params);
@@ -117,13 +118,20 @@ final class Router
         return null;
     }
 
-    private function anyPathMatch(string $path): bool
+    /** @return list<string> metode (urut) yang punya route untuk path ini; HEAD ikut bila GET ada. */
+    private function allowedMethods(string $path): array
     {
+        $m = [];
         foreach ($this->routes as $route) {
             if (preg_match($route['regex'], $path) === 1) {
-                return true;
+                $m[$route['method']] = true;
             }
         }
-        return false;
+        if (isset($m['GET'])) {
+            $m['HEAD'] = true;
+        }
+        $out = array_keys($m);
+        sort($out);
+        return $out;
     }
 }

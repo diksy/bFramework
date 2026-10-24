@@ -56,7 +56,7 @@ final class LoginThrottle
     {
         foreach ($tiers as $i => [$max, $window]) {
             if (!$this->limiter->hit($key . '#' . $i, $max, $window)) {
-                throw new TooManyRequests('Terlalu banyak percobaan');
+                throw new TooManyRequests('Terlalu banyak percobaan', $window);
             }
         }
     }

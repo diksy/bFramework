@@ -45,6 +45,10 @@ final class FileSessionStore implements SessionStore
         private readonly ?array $cookies = null,
         ?callable $emit = null,
         private readonly ?Clock $clock = null,
+        /** S7: sesi benar-benar kosong (tanpa kunci apa pun) dihapus gc setelah idle selama ini (detik). */
+        private readonly int $anonEmptyTtl = 300,
+        /** S7: sesi hanya-CSRF dihapus gc setelah idle selama ini (detik); form yang ditinggalkan masih sempat dipakai. */
+        private readonly int $anonCsrfTtl = 2700,
     ) {
         if ($idleTtl < 1 || $absoluteTtl < 1) {
             throw new InvalidArgumentException('TTL harus positif');
@@ -173,9 +177,18 @@ final class FileSessionStore implements SessionStore
             if (preg_match(self::ID_RE, $id) !== 1) {
                 continue;
             }
-            if ($this->load($id) === null) {
+            $rec = $this->load($id);
+            if ($rec === null) {
                 $this->unlink($id);
                 $n++;
+            } else {
+                // S7: hanya sesi tanpa kunci (kosong) atau hanya token CSRF yang dihapus lebih cepat; kunci lain tak disentuh.
+                $keys = array_keys($rec['d']);
+                $ttl = $keys === [] ? $this->anonEmptyTtl : ($keys === [Csrf::KEY] ? $this->anonCsrfTtl : null);
+                if ($ttl !== null && $this->now() - $rec['a'] > $ttl) {
+                    $this->unlink($id);
+                    $n++;
+                }
             }
         }
         return $n;

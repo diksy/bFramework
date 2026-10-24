@@ -67,7 +67,7 @@ final class UpdateController
             return $this->stepUp->redirect($r);
         }
         if (!$this->limiter->hit('update-status:' . $who->userId, 30, 300)) {
-            throw new TooManyRequests();
+            throw new TooManyRequests('', 300);
         }
         $diff = $this->manifest->diff();
         $this->logger?->info('Halaman pembaruan dibuka', ['user_id' => $who->userId, 'bersih' => $diff->clean()]);
