@@ -103,7 +103,7 @@ final class SsoHarness
         $claims = new ClaimsValidator($cfg->issuer, $cfg->clientId);
         $sids = $this->sids();
         $vault = $this->vault();
-        $bc = new BackchannelHandler($oidc, $claims, new JtiStore($a->dir . '/jti', $a->clock), $sids, $vault, $a->clock, $a->logger);
+        $bc = new BackchannelHandler($oidc, $claims, new JtiStore($a->dir . '/jti', $a->clock), $sids, $vault, $a->clock, $a->logger, new \bFramework\Core\RateLimiter($a->dir . '/ratelimit', $a->clock));
         $driver = new SsoDriver(
             $this->mode, $cfg, $oidc, $bc, $claims, $manager, $a->users(), $a->accounts, $sids, $vault, $a->hasher, $a->throttle(),
             $session, $csrf, $views, $layout, $a->clock, $local, $a->logger,

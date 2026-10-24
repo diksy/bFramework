@@ -543,6 +543,7 @@ function buildSso(
             $vault,
             $clock,
             $logger,
+            new Core\RateLimiter($appDir . '/storage/ratelimit', $clock),
         );
     }
     return new Sso\SsoDriver($mode, $cfg, $oidc, $backchannel, $claims, $manager, $users, $accounts, $sids, $vault, $hasher, $throttle, $session, $csrf, $views, $layout, $clock, $local, $logger);

@@ -271,6 +271,19 @@ final class LoginFlowTest extends TestCase
         self::assertSame(0, $this->userCount());
     }
 
+    public function test_S11_JIT_hanya_bila_email_verified_true(): void
+    {
+        $r = $this->h->browser('203.0.113.21')->login(['email_verified' => null]);
+        self::assertSame(403, $r['callback']->status, 'claim hilang diperlakukan tak terbukti');
+        self::assertSame(0, $this->userCount());
+        $r = $this->h->browser('203.0.113.22')->login(['email_verified' => false]);
+        self::assertSame(403, $r['callback']->status);
+        self::assertSame(0, $this->userCount());
+        $r = $this->h->browser('203.0.113.23')->login(['email_verified' => true]);
+        self::assertSame(302, $r['callback']->status);
+        self::assertSame(1, $this->userCount());
+    }
+
     public function test_SSO_14_logout_lokal_lalu_redirect_ke_end_session_dengan_id_token_hint(): void
     {
         $b = $this->h->browser();
