@@ -1,14 +1,32 @@
+# Versi didukung: Apache 2.4 (utama) dan 2.2 tanpa 500 (semua direktif opsional dibungkus <IfModule>; tanpa flag/
+# fungsi khusus 2.4 di luar pembungkus). LiteSpeed kompatibel dengan aturan ini.
 # ARCH-01: hanya index.php dan assets/ yang dilayani; sisanya ke index.php
 DirectoryIndex index.php
 Options -Indexes
+<IfModule mod_rewrite.c>
 RewriteEngine On
 
 # SEC-PER-01: blokir dotfile (termasuk .env, .git), .json, .sqlite, .log di mana pun (403)
 RewriteRule (^|/)\. - [F,L]
 RewriteRule \.(json|sqlite|sqlite3|log)$ - [F,L]
 
+# F8 / CACHE-12: halaman cache statis dilayani tanpa PHP. HANYA GET tanpa query, tanpa cookie sesi/ingat-saya
+# (bf_sid, bf_remember, dengan/tanpa awalan __Host-) dan tanpa Authorization; berkas harus ada. Nama berkas
+# diturunkan dari path yang hanya berisi [a-z0-9_-]/ (tanpa titik/NUL/..), jadi tidak bisa keluar dari _pc/.
+# Tanpa flag khusus 2.4: pada putaran internal URL menjadi _pc/x.html, yang tidak cocok dengan
+# pola di atas dan dikecualikan dari aturan index.php lewat syarat `!^/_pc/...html$` di bawah, jadi tidak ada loop.
+# Header keamanan berkas statis: _pc/.htaccess.
+RewriteCond %{REQUEST_METHOD} ^(GET|HEAD)$
+RewriteCond %{QUERY_STRING} ^$
+RewriteCond %{HTTP_COOKIE} !(^|;\s*)(__Host-)?bf_(sid|remember)=
+RewriteCond %{HTTP:Authorization} ^$
+RewriteCond %{DOCUMENT_ROOT}/_pc/$1.html -f
+RewriteRule ^([a-z0-9_-]+(?:/[a-z0-9_-]+)*)/?$ _pc/$1.html [L]
+
 RewriteCond %{REQUEST_URI} !^/assets/
+RewriteCond %{REQUEST_URI} !^/_pc/[a-z0-9_/-]+\.html$
 RewriteRule !^index\.php$ index.php [L]
+</IfModule>
 
 # SEC-PER-01 (lapis kedua bila mod_rewrite tidak aktif)
 <FilesMatch "(^\.|\.(json|sqlite|sqlite3|log)$)">

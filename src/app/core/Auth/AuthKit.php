@@ -11,6 +11,7 @@ use bFramework\Core\FileSessionStore;
 use bFramework\Core\Csrf;
 use bFramework\Core\Middleware;
 use bFramework\Core\Router;
+use bFramework\Core\SkipMiddleware;
 use bFramework\Core\SecurityHeaders;
 use bFramework\Core\HostGuard;
 use bFramework\Core\Nonce;
@@ -36,18 +37,20 @@ final readonly class AuthKit
      *
      * @param list<string> $allowedHosts
      * SEC-REQ-03 fail-closed: daftar kosong menolak semua host (400) kecuali $devMode.
+     * @param (\Closure(\bFramework\Core\Request):bool)|null $skip true = lewati sesi/auth/CSRF (halaman cache anonim, F8)
      *
      * @return list<Middleware>
      */
-    public function middleware(Router $router, array $allowedHosts = [], bool $devMode = false): array
+    public function middleware(Router $router, array $allowedHosts = [], bool $devMode = false, ?\Closure $skip = null): array
     {
         $chain = [new SecurityHeaders(Nonce::current(...))];
         if ($allowedHosts !== [] || !$devMode) {
             $chain[] = new HostGuard($allowedHosts);
         }
-        $chain[] = new SessionMiddleware($this->session, $this->jar, $this->session->gc(...));
-        $chain[] = new AuthMiddleware($this->manager, $this->remember);
-        $chain[] = new CsrfMiddleware($router, $this->csrf, $this->session);
+        $wrap = static fn(Middleware $m): Middleware => $skip === null ? $m : new SkipMiddleware($m, $skip);
+        $chain[] = $wrap(new SessionMiddleware($this->session, $this->jar, $this->session->gc(...)));
+        $chain[] = $wrap(new AuthMiddleware($this->manager, $this->remember));
+        $chain[] = $wrap(new CsrfMiddleware($router, $this->csrf, $this->session));
         return $chain;
     }
 }

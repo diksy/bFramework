@@ -84,17 +84,24 @@ $conn = bFramework\connectDatabase($app);
 $auth = bFramework\buildAuth($app, $conn, $https, $logger);
 $defs = new bFramework\Runtime\Definitions(new bFramework\Runtime\CacheStore($app . '/storage/cache'));
 [$uploads, $fileCtl] = bFramework\buildUploads($app, $conn, $defs, new bFramework\Runtime\CurrentIdentity($auth->session), $logger);
-bFramework\configureRuntime($app, $conn, $auth->session, $logger, $uploads);
+$pageCache = bFramework\buildPageCache($app, __DIR__, $defs, $logger);
+bFramework\configureRuntime($app, $conn, $auth->session, $logger, $uploads, $pageCache, $defs);
 $fileCtl->registerRoutes($router);
-bFramework\buildBuilder($app, $conn, $defs, $auth->session, $auth->csrf, $logger)->registerRoutes($router); // 404 di produksi kecuali dibuka eksplisit (SEC-BLD-01)
+bFramework\buildBuilder($app, $conn, $defs, $auth->session, $auth->csrf, $logger, $pageCache)->registerRoutes($router); // 404 di produksi kecuali dibuka eksplisit (SEC-BLD-01)
 if (random_int(1, 200) === 1) {
     $auth->deferred->push(static function () use ($uploads): void {
         $uploads->purgeOrphans(86400); // upload yang tak pernah di-submit (setelah respons dikirim)
     });
 }
+if (random_int(1, 200) === 1) {
+    $auth->deferred->push(static function () use ($pageCache): void {
+        $pageCache->gc(); // kedaluwarsa/yatim; halaman statis tidak menjalankan PHP, jadi dipicu dari request lain
+    });
+}
 $auth->driver->registerRoutes($router);
 $auth->admin?->registerRoutes($router);
-$middleware = $auth->middleware($router, $hosts, false);
+// Halaman cache anonim (GET tanpa query/cookie sesi) tidak memulai sesi sama sekali, jadi tanpa Set-Cookie (F8).
+$middleware = $auth->middleware($router, $hosts, false, $pageCache->eligible(...));
 
 $response = (new Kernel($router, $middleware, $logger, $errors->page(...)))->handleGlobals();
 // Respons dikirim dan koneksi ditutup sebelum pekerjaan tunda (email) dijalankan.

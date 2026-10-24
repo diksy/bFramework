@@ -25,17 +25,29 @@ final class Compiler
     private const LOCK_WAIT_SEC = 15;
 
     private readonly string $extDir;
+    private readonly string $pcDir;
 
     /**
      * @param ?string $extDir folder extensions (default: saudara `definitions/`)
      * @param ?Closure(string):void $onEmit seam tes: dipanggil setelah tiap file ditulis
+     * @param ?Closure():void $onBuilt buang cache halaman (F8/CACHE-13); dipanggil sebelum dan sesudah aktivasi.
+     *        Gagal -> fallback hapus `*.html` di $pcDir; masih gagal -> build gagal (fail-closed). Bila kegagalan terjadi
+     *        SETELAH aktivasi, versi sebelumnya diaktifkan kembali (atau tidak ada versi aktif bila sebelumnya kosong),
+     *        purge diulang, dan bila tetap gagal $pcDir dikarantina (rename ke nama berawalan titik yang diblokir 403)
+     *        sehingga Apache tidak menyajikan halaman basi.
+     * @param ?string $pcDir folder cache halaman statis; default `<app>/../public_html/_pc` dari lokasi CacheStore,
+     *        sehingga pemanggil tanpa $onBuilt tetap tidak meninggalkan halaman basi.
      */
     public function __construct(
         private readonly CacheStore $store,
         ?string $extDir = null,
         private readonly ?Closure $onEmit = null,
+        private readonly ?Closure $onBuilt = null,
+        private readonly ?\bFramework\Contracts\Logger $logger = null,
+        ?string $pcDir = null,
     ) {
         $this->extDir = $extDir ?? '';
+        $this->pcDir = $pcDir ?? dirname($store->dir(), 3) . '/public_html/_pc';
     }
 
     public function build(string $defDir, Dialect $dialect): BuildResult
@@ -72,8 +84,21 @@ final class Compiler
                 }
                 $stage = null;
             }
-            if ($this->store->current() !== $version) {
+            // CACHE-13: buang halaman statis SEBELUM aktivasi (gagal -> belum ada yang berubah, versi lama tetap aktif)
+            // dan sesudahnya (menutup halaman yang tersimpan di sela waktu). Bila purge kedua gagal, aktivasi
+            // dibatalkan (rollback ke $prev) dan build gagal. Tidak boleh ada halaman basi yang tersisa.
+            $prev = $this->store->current();
+            $this->purgePages();
+            if ($prev !== $version) {
                 $this->store->activate($version);
+            }
+            try {
+                $this->purgePages();
+            } catch (Throwable $e) {
+                if ($prev !== $version) {
+                    $this->rollback($prev);
+                }
+                throw $e;
             }
             $this->store->gc();
             return new BuildResult($version);
@@ -88,6 +113,76 @@ final class Compiler
                 flock($lock, LOCK_UN);
                 fclose($lock);
             }
+        }
+    }
+
+    /**
+     * CACHE-13: batalkan aktivasi setelah purge kedua gagal. Kembalikan versi sebelumnya (null -> tidak ada versi aktif),
+     * lalu purge ulang; bila masih gagal, karantina $pcDir agar Apache tidak menyajikan halaman yang tersisa.
+     */
+    private function rollback(?string $prev): void
+    {
+        try {
+            if ($prev !== null) {
+                $this->store->activate($prev);
+            } elseif (is_file($this->store->dir() . '/current') && !@unlink($this->store->dir() . '/current')) {
+                throw new RuntimeException('Versi aktif tidak dapat dinonaktifkan');
+            }
+        } catch (Throwable $e) {
+            $this->logger?->error('Rollback versi cache gagal', ['ex' => $e::class]);
+        }
+        try {
+            $this->purgePages();
+            return;
+        } catch (Throwable) {
+            // lanjut ke karantina
+        }
+        $this->quarantinePages();
+    }
+
+    /**
+     * Pindahkan $pcDir ke folder saudara berawalan titik (diblokir `.htaccess` root: 403) lalu buat ulang $pcDir
+     * kosong beserta `.htaccess`-nya. Gagal -> hanya dilog; build tetap dilaporkan gagal oleh pemanggil.
+     */
+    private function quarantinePages(): void
+    {
+        if (!is_dir($this->pcDir)) {
+            return;
+        }
+        $q = dirname($this->pcDir) . '/.pc_stale_' . bin2hex(random_bytes(6));
+        if (!@rename($this->pcDir, $q)) {
+            $this->logger?->error('Karantina cache halaman gagal; halaman basi mungkin masih tersaji', []);
+            return;
+        }
+        $this->logger?->error('Cache halaman dikarantina setelah purge gagal', []);
+        if (@mkdir($this->pcDir, 0755) && is_file($q . '/.htaccess')) {
+            @copy($q . '/.htaccess', $this->pcDir . '/.htaccess');
+        }
+    }
+
+    /** @throws RuntimeException bila halaman statis basi tidak dapat dibuang */
+    private function purgePages(): void
+    {
+        if ($this->onBuilt !== null) {
+            try {
+                ($this->onBuilt)();
+                return;
+            } catch (Throwable $e) {
+                $this->logger?->error('Purge cache halaman gagal; mencoba hapus langsung', ['ex' => $e::class]);
+            }
+        }
+        $left = 0;
+        if (is_dir($this->pcDir)) {
+            $it = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($this->pcDir, \FilesystemIterator::SKIP_DOTS));
+            foreach ($it as $f) {
+                if ($f instanceof \SplFileInfo && !$f->isDir() && $f->getExtension() === 'html' && !@unlink($f->getPathname()) && file_exists($f->getPathname())) {
+                    $left++;
+                }
+            }
+        }
+        if ($left > 0) {
+            $this->logger?->error('Fallback purge cache halaman gagal', ['sisa' => $left]);
+            throw new RuntimeException('Cache halaman tidak dapat dibuang');
         }
     }
 

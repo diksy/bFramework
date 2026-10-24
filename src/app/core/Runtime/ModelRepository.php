@@ -39,6 +39,7 @@ final class ModelRepository
         private readonly bool $devMode = false,
         private readonly ?\bFramework\Contracts\Logger $logger = null,
         private readonly ?FileRefs $files = null,
+        private readonly ?PageCacheSink $pageCache = null,
     ) {
         $own = Authorizer::ownerColumn($def);
         if ($own !== null && !isset($this->fields()[$own])) {
@@ -90,7 +91,9 @@ final class ModelRepository
         if ($msgs !== []) {
             return new Result(null, [], $msgs, $clean);
         }
+        $this->invalidateCache(); // mendahului: simpan-lama yang sedang berjalan menjadi basi
         $id = $this->query->insert($this->table(), $clean);
+        $this->invalidateCache();
         $claimErr = $this->claimAll($clean, $id);
         if ($claimErr !== []) {
             // Race: fid diambil pihak lain di antara pemeriksaan dan claim. Batalkan baris (tanpa file yatim).
@@ -136,7 +139,9 @@ final class ModelRepository
         }
         if ($clean !== []) {
             // rowCount 0 di MySQL juga berarti "tidak berubah"; keberadaan baris sudah dipastikan di atas.
+            $this->invalidateCache();
             $this->query->update($this->table(), $clean, $this->byId(Action::Update, $id));
+            $this->invalidateCache();
         }
         foreach (array_keys($this->fileFields()) as $n) {
             $old = $current[$n] ?? null;
@@ -160,7 +165,10 @@ final class ModelRepository
         if ($msgs !== []) {
             throw new HookRejected($msgs);
         }
-        if ($this->query->delete($this->table(), $this->byId(Action::Delete, $id)) < 1) {
+        $this->invalidateCache();
+        $deleted = $this->query->delete($this->table(), $this->byId(Action::Delete, $id));
+        $this->invalidateCache();
+        if ($deleted < 1) {
             throw new NotFound();
         }
         if ($this->files !== null) {
@@ -171,6 +179,23 @@ final class ModelRepository
             }
         }
         $this->hooks->run($this->def, 'afterDelete', $rows[0]);
+    }
+
+    /**
+     * CACHE-13: hapus halaman cache bertag model ini. Gagal invalidasi tidak menggagalkan penyimpanan data
+     * (PageCache sudah purge total sebagai cadangan) tetapi dicatat sebagai error.
+     */
+    private function invalidateCache(): void
+    {
+        if ($this->pageCache === null) {
+            return;
+        }
+        $model = is_string($this->def['model'] ?? null) ? $this->def['model'] : $this->table();
+        try {
+            $this->pageCache->invalidate($model);
+        } catch (\Throwable $e) {
+            $this->logger?->error('Invalidasi cache halaman gagal', ['model' => $model, 'ex' => $e::class]);
+        }
     }
 
     /** @return string|null string numerik (decimal tanpa float) atau null */

@@ -12,6 +12,7 @@ use bFramework\Contracts\Identity;
 use bFramework\Contracts\NotFound;
 use bFramework\Contracts\SessionStore;
 use bFramework\Core\Csrf;
+use bFramework\Core\Nonce;
 use bFramework\Core\Request;
 use bFramework\Core\Response;
 use bFramework\Core\SafeHtml;
@@ -39,6 +40,7 @@ final class PageController
         private readonly bool $devMode = false,
         private readonly ?\bFramework\Contracts\Logger $logger = null,
         private readonly ?FileRefs $files = null,
+        private readonly ?PageCacheSink $cache = null,
     ) {
     }
 
@@ -55,8 +57,9 @@ final class PageController
         bool $devMode = false,
         ?\bFramework\Contracts\Logger $logger = null,
         ?FileRefs $files = null,
+        ?PageCacheSink $cache = null,
     ): void {
-        self::$ctx = new self($defs, $query, $authz, $hooks, $views, $layout, $session, $identity, $csrf, $devMode, $logger, $files);
+        self::$ctx = new self($defs, $query, $authz, $hooks, $views, $layout, $session, $identity, $csrf, $devMode, $logger, $files, $cache);
     }
 
     /** @param array<string,string> $params */
@@ -107,13 +110,13 @@ final class PageController
     /**
      * @return array{0:array<string,mixed>,1:?Identity}|Response halaman + identitas, atau respons penolakan
      */
-    private function gate(string $name): array|Response
+    private function gate(string $name, bool $anon = false): array|Response
     {
         $page = preg_match(DefinitionSchema::PAGE_RE, $name) === 1 ? $this->defs->page($name) : null;
         if ($page === null) {
             throw new NotFound();
         }
-        $who = $this->identity->get();
+        $who = $anon ? null : $this->identity->get(); // anon: tanpa cookie sesi, sesi tidak dimulai (F8)
         if (!Navigation::allows($page, $who)) {
             if ($who === null) {
                 return Response::redirect('/login');
@@ -151,18 +154,26 @@ final class PageController
     /** @param array<string,mixed> $def */
     private function repo(array $def, ?Identity $who): ModelRepository
     {
-        return new ModelRepository($def, $this->query, $this->authz, $who, $this->hooks, null, $this->targetResolver(), $this->devMode, $this->logger, $this->files);
+        return new ModelRepository($def, $this->query, $this->authz, $who, $this->hooks, null, $this->targetResolver(), $this->devMode, $this->logger, $this->files, $this->cache);
     }
 
     private function doIndex(Request $r, string $name): Response
     {
-        $g = $this->gate($name);
+        // F8: request anonim tanpa cookie sesi ke halaman ber-cache. Middleware sesi dilewati (SkipMiddleware), jadi
+        // tidak ada sesi/token CSRF/flash/nonce yang boleh ikut ke HTML.
+        $anon = $this->cache !== null && $this->cache->eligible($r);
+        $g = $this->gate($name, $anon);
         if ($g instanceof Response) {
             return $g;
         }
         [$page, $who] = $g;
+        // CACHE-14 (runtime): hanya halaman cache:true + access '*' + tanpa identitas.
+        $cacheable = $anon && $who === null && ($page['cache'] ?? false) === true
+            && ($page['access'] ?? null) === '*' && ($page['route'] ?? null) === $r->path;
+        $tags = $cacheable ? $this->cacheTags($page) : [];
+        $snap = $cacheable && $this->cache !== null ? $this->cache->snapshot($tags) : null; // sebelum data dibaca
         $rend = new ComponentRenderer(
-            $this->defs, $this->query, $this->authz, $this->hooks, $this->views, $who, $page, $r->query, $this->csrf->token(),
+            $this->defs, $this->query, $this->authz, $this->hooks, $this->views, $who, $page, $r->query, $anon ? '' : $this->csrf->token(),
         );
         $body = '';
         foreach ((array) ($page['layout'] ?? []) as $c) {
@@ -170,9 +181,41 @@ final class PageController
                 $body .= $rend->render($c)->toString();
             }
         }
+        if ($anon && str_contains($body, '_csrf')) {
+            $cacheable = false; // form ber-token tidak boleh masuk cache; dilayani tanpa cache (token kosong = ditolak 419)
+            $this->logger?->warning('Halaman cache memuat form ber-token; tidak di-cache', ['page' => $name]);
+        }
         $title = is_string($page['title'] ?? null) ? $page['title'] : $name;
         $content = $this->views->render('page', ['title' => $title, 'body' => SafeHtml::fromTrusted($body)]);
-        return $this->layoutResponse($title, $content, $name, $who, 200);
+        $res = $this->layoutResponse($title, $content, $name, $who, 200, false, $anon);
+        if ($cacheable && $this->cache !== null) {
+            $this->cache->store((string) $page['route'], SafeHtml::fromTrusted($res->body), $tags, $snap);
+        }
+        return $res;
+    }
+
+    /**
+     * Tag cache halaman: model sumber komponen + model target relasi field-nya (label relasi ikut tampil).
+     *
+     * @param array<string,mixed> $page
+     * @return list<string>
+     */
+    private function cacheTags(array $page): array
+    {
+        $tags = [];
+        foreach ((array) ($page['layout'] ?? []) as $c) {
+            if (!is_array($c) || !is_array($c['source'] ?? null) || !is_string($c['source']['model'] ?? null)) {
+                continue;
+            }
+            $tags[$c['source']['model']] = true;
+            $def = $this->defs->model($c['source']['model']);
+            foreach ((array) ($def['fields'] ?? []) as $f) {
+                if (is_array($f) && ($f['type'] ?? '') === 'relasi' && is_string($f['target'] ?? null)) {
+                    $tags[$f['target']] = true;
+                }
+            }
+        }
+        return array_map('strval', array_keys($tags));
     }
 
     /**
@@ -291,7 +334,7 @@ final class PageController
         }
         [$def, $comp] = $mc;
         // Hanya field yang tampil di form yang boleh diisi (mass assignment, SEC-DATA-02).
-        $repo = new ModelRepository($def, $this->query, $this->authz, $who, $this->hooks, array_map('strval', array_keys($this->formFields($def, $comp))), $this->targetResolver(), $this->devMode, $this->logger, $this->files);
+        $repo = new ModelRepository($def, $this->query, $this->authz, $who, $this->hooks, array_map('strval', array_keys($this->formFields($def, $comp))), $this->targetResolver(), $this->devMode, $this->logger, $this->files, $this->cache);
         $res = $id === null ? $repo->create($r->post) : $repo->update($id, $r->post);
         if (!$res->ok()) {
             return $this->doForm($name, $id, $r->post + $res->values, $res->errors, $res->formErrors, 422);
@@ -320,11 +363,11 @@ final class PageController
         return Response::redirect((string) $page['route']);
     }
 
-    private function layoutResponse(string $title, SafeHtml $content, string $active, ?Identity $who, int $status, bool $upload = false): Response
+    private function layoutResponse(string $title, SafeHtml $content, string $active, ?Identity $who, int $status, bool $upload = false, bool $anon = false): Response
     {
         $html = $this->layout->render('layout', [
             'title' => $title,
-            'csrf' => $this->csrf->token(),
+            'csrf' => $anon ? '' : $this->csrf->token(),
             'user' => $who === null ? null : [
                 'name' => $who->activeRole,
                 'switch' => count($who->roles) > 1,
@@ -332,11 +375,16 @@ final class PageController
             ],
             'nav' => Navigation::build($this->defs->pages(), $who),
             'active' => $active,
-            'flash' => $this->session->pullFlash(),
+            'flash' => $anon ? [] : $this->session->pullFlash(),
             'scripts' => $upload ? ['/assets/app.js', '/assets/upload.js'] : ['/assets/app.js'],
             'bodyClass' => '',
             'content' => $content,
         ]);
-        return Response::html($html->toString(), $status);
+        $out = $html->toString();
+        if ($anon) {
+            // Halaman anonim dilayani sama persis dengan versi cache: tanpa atribut nonce (script-src 'self' cukup untuk /assets/).
+            $out = str_replace(' nonce="' . Nonce::current() . '"', '', $out);
+        }
+        return Response::html($out, $status);
     }
 }
