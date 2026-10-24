@@ -13,9 +13,7 @@ use bFramework\Contracts\Forbidden;
 use bFramework\Contracts\HttpException;
 use bFramework\Contracts\Identity;
 use bFramework\Contracts\NotFound;
-use bFramework\Contracts\NotImplemented;
 use bFramework\Contracts\TooManyRequests;
-use bFramework\Core\Response;
 use PHPUnit\Framework\TestCase;
 
 final class ContractsTest extends TestCase
@@ -42,11 +40,5 @@ final class ContractsTest extends TestCase
         $i = new Identity(1, ['a'], 'a', ['pwd']);
         self::assertSame('a', $i->activeRole);
         self::assertNull($i->ssoSid);
-    }
-
-    public function test_stub_melempar_NotImplemented(): void
-    {
-        $this->expectException(NotImplemented::class);
-        Response::html('x');
     }
 }

@@ -1,0 +1,6 @@
+# ARCH-01: hanya index.php dan assets/ yang dilayani; sisanya ke index.php
+DirectoryIndex index.php
+Options -Indexes
+RewriteEngine On
+RewriteCond %{REQUEST_URI} !^/assets/
+RewriteRule !^index\.php$ index.php [L]
