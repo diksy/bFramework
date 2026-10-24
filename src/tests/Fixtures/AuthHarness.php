@@ -5,7 +5,11 @@ declare(strict_types=1);
 namespace bFramework\Tests\Fixtures;
 
 use bFramework\Auth\AccountStore;
+use bFramework\Auth\AdminController;
 use bFramework\Auth\AuthKit;
+use bFramework\Auth\DbUserStore;
+use bFramework\Auth\RoleStore;
+use bFramework\Runtime\Authorizer;
 use bFramework\Auth\AuthManager;
 use bFramework\Auth\AuthSchema;
 use bFramework\Auth\CookieJar;
@@ -88,6 +92,11 @@ final class AuthHarness
         return $id;
     }
 
+    public function users(): DbUserStore
+    {
+        return new DbUserStore($this->conn, $this->clock, $this->accounts, $this->logger);
+    }
+
     public function vault(): SecretVault
     {
         return new SecretVault(self::APP_KEY);
@@ -135,9 +144,18 @@ final class AuthHarness
             ['appUrl' => 'https://app.contoh.test', 'registration' => $this->registration, 'defaultRole' => 'staf', 'from' => 'noreply@contoh.test'],
             $this->logger,
         );
-        $kit = new AuthKit($session, $jar, $csrf, $manager, $remember, $driver, $this->deferred);
+        $views = new Template(dirname(__DIR__, 2) . '/app/core/Auth/views', $this->dir . '/views');
+        $admin = new AdminController(
+            $manager, $this->users(), new RoleStore($this->conn), $this->tokens(), new Mailer($this->mail, $this->logger),
+            $this->deferred, $session, $csrf, $views,
+            new Template(dirname(__DIR__, 2) . '/app/core/Core/views', $this->dir . '/views'),
+            new Authorizer(), static fn(): array => [],
+            ['appUrl' => 'https://app.contoh.test', 'from' => 'noreply@contoh.test'], $this->logger,
+        );
+        $kit = new AuthKit($session, $jar, $csrf, $manager, $remember, $driver, $this->deferred, $admin);
         $router = new Router();
         $driver->registerRoutes($router);
+        $admin->registerRoutes($router);
         return [new Kernel($router, $kit->middleware($router, [], true), $this->logger), $kit, $jar];
     }
 

@@ -27,6 +27,12 @@
   </nav>
   <div class="side-foot">
     <div class="side-user"><span class="uname">{{ user.name }}</span></div>
+    {% if user.switch %}
+    <form method="post" action="/peran-aktif" class="side-roles">
+      <input type="hidden" name="_csrf" value="{{ csrf }}">
+      {% for r in user.roleOptions %}<button class="btn sm block{% if r.on %} primary{% endif %}" type="submit" name="role" value="{{ r.name }}" title="Ganti peran aktif"><span class="lbl">{{ r.name }}</span></button>{% endfor %}
+    </form>
+    {% endif %}
     <form method="post" action="/logout" class="side-logout">
       <input type="hidden" name="_csrf" value="{{ csrf }}">
       <button class="btn sm block" type="submit" title="Keluar"><span class="lbl">Keluar</span></button>

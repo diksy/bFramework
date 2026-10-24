@@ -315,7 +315,11 @@ final class PageController
         $html = $this->layout->render('layout', [
             'title' => $title,
             'csrf' => $this->csrf->token(),
-            'user' => $who === null ? null : ['name' => $who->activeRole],
+            'user' => $who === null ? null : [
+                'name' => $who->activeRole,
+                'switch' => count($who->roles) > 1,
+                'roleOptions' => array_map(static fn(string $n): array => ['name' => $n, 'on' => $n === $who->activeRole], $who->roles),
+            ],
             'nav' => Navigation::build($this->defs->pages(), $who),
             'active' => $active,
             'flash' => $this->session->pullFlash(),

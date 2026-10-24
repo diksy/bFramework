@@ -90,15 +90,17 @@ function buildAuth(string $appDir, Runtime\Connection $conn, bool $https, ?Contr
     $smtp['SMTP_PASSWORD'] = $pass !== false ? $pass : Core\Config::get('SMTP_PASSWORD');
 
     $deferred = new Auth\Deferred($logger);
+    $mailer = Auth\Mailer::fromConfig($smtp, $logger);
+    $tokens = new Auth\OneTimeToken($conn, $clock);
     $driver = new Auth\LocalDriver(
         $manager,
         $accounts,
         new Auth\PasswordHasher(),
         new Auth\LoginThrottle(new Core\RateLimiter($appDir . '/storage/ratelimit', $clock)),
         $remember,
-        new Auth\OneTimeToken($conn, $clock),
+        $tokens,
         $twofa,
-        Auth\Mailer::fromConfig($smtp, $logger),
+        $mailer,
         $deferred,
         $session,
         $csrf,
@@ -114,5 +116,33 @@ function buildAuth(string $appDir, Runtime\Connection $conn, bool $https, ?Contr
         ],
         $logger,
     );
-    return new Auth\AuthKit($session, $jar, $csrf, $manager, $remember, $driver, $deferred);
+
+    // M11: administrasi pengguna/peran + pembersihan probabilistik akun pending kedaluwarsa (setelah respons dikirim).
+    $users = new Auth\DbUserStore($conn, $clock, $accounts, $logger);
+    if (random_int(1, 200) === 1) {
+        $deferred->push(static function () use ($users): void {
+            $users->purgeExpiredPending(7 * 86400);
+        });
+    }
+    $defs = new Runtime\Definitions(new Runtime\CacheStore($appDir . '/storage/cache'));
+    $admin = new Auth\AdminController(
+        $manager,
+        $users,
+        new Auth\RoleStore($conn),
+        $tokens,
+        $mailer,
+        $deferred,
+        $session,
+        $csrf,
+        new Core\Template($appDir . '/core/Auth/views', $appDir . '/storage/cache/views'),
+        new Core\Template($appDir . '/core/Core/views', $appDir . '/storage/cache/views'),
+        new Runtime\Authorizer(),
+        static fn(): array => $defs->pages(),
+        [
+            'appUrl' => Core\Config::get('APP_URL', ''),
+            'from' => Core\Config::get('MAIL_FROM', 'noreply@example.invalid'),
+        ],
+        $logger,
+    );
+    return new Auth\AuthKit($session, $jar, $csrf, $manager, $remember, $driver, $deferred, $admin);
 }

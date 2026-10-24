@@ -50,6 +50,7 @@ if (is_string($appUrl) && $appUrl !== '') {
     $auth = bFramework\buildAuth($app, $conn, $https, $logger);
     bFramework\configureRuntime($app, $conn, $auth->session, $logger);
     $auth->driver->registerRoutes($router);
+    $auth->admin?->registerRoutes($router);
     $middleware = $auth->middleware($router, $hosts, Config::devMode());
 } else {
     $auth = null;
