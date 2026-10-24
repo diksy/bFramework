@@ -13,4 +13,6 @@ return [
     'DB_FILE' => 'app.sqlite',
     'MAIL_FROM' => 'noreply@contoh.example',
     'auth' => ['registration' => false],
+    // Builder (/_builder) mati di produksi (404). Jangan aktifkan kecuali terpaksa; butuh ketiganya:
+    // 'builder' => ['unsafeBuilderInProduction' => true, 'allowedIps' => ['203.0.113.7'], 'passwordHash' => '<password_hash() Argon2id>'],
 ];

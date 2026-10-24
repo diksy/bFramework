@@ -86,6 +86,7 @@ $defs = new bFramework\Runtime\Definitions(new bFramework\Runtime\CacheStore($ap
 [$uploads, $fileCtl] = bFramework\buildUploads($app, $conn, $defs, new bFramework\Runtime\CurrentIdentity($auth->session), $logger);
 bFramework\configureRuntime($app, $conn, $auth->session, $logger, $uploads);
 $fileCtl->registerRoutes($router);
+bFramework\buildBuilder($app, $conn, $defs, $auth->session, $auth->csrf, $logger)->registerRoutes($router); // 404 di produksi kecuali dibuka eksplisit (SEC-BLD-01)
 if (random_int(1, 200) === 1) {
     $auth->deferred->push(static function () use ($uploads): void {
         $uploads->purgeOrphans(86400); // upload yang tak pernah di-submit (setelah respons dikirim)
