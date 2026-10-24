@@ -35,8 +35,22 @@ final class SecurityHeaders implements Middleware
             $headers['Strict-Transport-Security'] = 'max-age=' . $this->hstsMaxAge . '; includeSubDomains';
         }
         foreach ($headers as $k => $v) {
+            // CSP yang ditetapkan handler (mis. berkas unggahan: default-src 'none'; sandbox) tidak ditimpa.
+            if ($k === 'Content-Security-Policy' && self::hasHeader($res, $k)) {
+                continue;
+            }
             $res = $res->withHeader($k, $v);
         }
         return $res;
+    }
+
+    private static function hasHeader(Response $res, string $name): bool
+    {
+        foreach (array_keys($res->headers) as $h) {
+            if (strcasecmp($h, $name) === 0) {
+                return true;
+            }
+        }
+        return false;
     }
 }

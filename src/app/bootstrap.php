@@ -193,6 +193,117 @@ function buildBuilder(
 }
 
 /**
+ * Build pertama otomatis + tabel model (create-if-not-exists; tabel yang ada tidak disentuh, tanpa allowLoss).
+ * True = siap: versi aktif ada DAN tabel modelnya sudah dipastikan. Penanda siap `.schema_ok` (berisi versi) ditulis
+ * paling akhir, sesudah tabel dibuat, sehingga request lain tidak pernah menganggap siap saat tabel belum ada.
+ * Seluruh urutan compile + migrasi di bawah satu flock eksklusif `storage/first_build.lock` (urutan kunci:
+ * kunci ini lalu build.lock milik Compiler; Compiler tidak pernah mengambil kunci ini -> tanpa deadlock).
+ * Gagal compile/migrasi: dicatat, false (fail-closed: rute definisi tidak dimuat), versi aktif valid TIDAK dicabut,
+ * percobaan ulang ditahan 60 detik (negative cache yang kedaluwarsa).
+ * Versi baru hasil build terpisah (builder/updater, yang memigrasi sendiri) diberi jendela 30 detik sebelum tabel
+ * yang hilang dibuat di sini, agar tidak bentrok dengan migrasi milik builder.
+ */
+function ensureCompiled(string $appDir, Runtime\Connection $conn, ?Contracts\Logger $logger = null): bool
+{
+    $cacheDir = $appDir . '/storage/cache';
+    $store = new Runtime\CacheStore($cacheDir);
+    $okFile = $cacheDir . '/.schema_ok';
+    if (schemaReady($store, $okFile)) {
+        return true; // jalur cepat: tanpa kunci, tanpa kueri DB
+    }
+    if ($store->current() === null && !is_dir($appDir . '/definitions')) {
+        return false;
+    }
+    $lock = null;
+    try {
+        $store->ensureDir();
+        $lock = @fopen($appDir . '/storage/first_build.lock', 'c');
+        if ($lock === false) {
+            throw new \RuntimeException('kunci build pertama tidak dapat dibuka');
+        }
+        $deadline = microtime(true) + 20; // > batas tunggu kunci Compiler (15 detik)
+        while (!flock($lock, LOCK_EX | LOCK_NB)) {
+            if (microtime(true) > $deadline) {
+                $logger?->warning('build pertama: kunci sibuk');
+                return false; // fail-closed untuk request ini saja
+            }
+            usleep(50000);
+        }
+        if (schemaReady($store, $okFile)) {
+            return true; // diselesaikan request lain selagi menunggu kunci
+        }
+        $cur = $store->current();
+        $prevOk = trim((string) @file_get_contents($okFile));
+        if ($cur !== null && $prevOk !== '' && time() - (int) @filemtime($cacheDir . '/' . $cur) < 30) {
+            return true; // versi baru dari builder/updater: migrasinya milik pemanggil itu (perilaku lama)
+        }
+        $mark = $cacheDir . '/.build_failed';
+        if (is_file($mark) && time() - (int) @filemtime($mark) < 60) {
+            return false;
+        }
+        if ($cur === null) {
+            $r = (new Runtime\Compiler($store, $appDir . '/extensions', null, null, $logger))->build($appDir . '/definitions', $conn->dialect());
+            if (!$r->ok()) {
+                throw new \RuntimeException('compile gagal: ' . count($r->errors) . ' galat');
+            }
+        }
+        $defs = new Runtime\Definitions($store);
+        $cur = $defs->version(); // dipatok: penanda siap merujuk versi yang tabelnya diperiksa
+        $sqlite = $conn->dialect() === Contracts\Dialect::Sqlite;
+        $exists = $conn->pdo()->prepare(
+            $sqlite ? "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?"
+                : 'SELECT 1 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?',
+        );
+        $m = new Runtime\Migrator($conn, $conn->grammar(), $logger);
+        foreach ($defs->tables() as $t) {
+            if (tableExists($exists, $t->name)) {
+                continue;
+            }
+            try {
+                $m->apply($m->planCreate($t));
+                $logger?->info('tabel model dibuat', ['table' => $t->name]);
+            } catch (\Throwable $e) {
+                if (!tableExists($exists, $t->name)) { // 'table already exists' (dibuat proses lain) = sukses
+                    throw $e;
+                }
+            }
+        }
+        $tmp = $cacheDir . '/.tmp_' . bin2hex(random_bytes(8));
+        if (@file_put_contents($tmp, $cur, LOCK_EX) === false || !@rename($tmp, $okFile)) {
+            @unlink($tmp);
+            throw new \RuntimeException('penanda siap tidak dapat ditulis');
+        }
+        @unlink($mark);
+        return true; // penanda siap = langkah terakhir
+    } catch (\Throwable $e) {
+        $logger?->error('build pertama gagal', ['ex' => $e::class]);
+        @file_put_contents($cacheDir . '/.build_failed', '1');
+        return false;
+    } finally {
+        if (is_resource($lock)) {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+        }
+    }
+}
+
+/** @phpstan-impure Siap = versi aktif ada dan penanda `.schema_ok` berisi versi itu. */
+function schemaReady(Runtime\CacheStore $store, string $okFile): bool
+{
+    $cur = $store->current();
+    return $cur !== null && trim((string) @file_get_contents($okFile)) === $cur;
+}
+
+/** @phpstan-impure */
+function tableExists(\PDOStatement $exists, string $name): bool
+{
+    $exists->execute([$name]);
+    $v = $exists->fetchColumn();
+    $exists->closeCursor();
+    return $v !== false;
+}
+
+/**
  * Koneksi database dari config (DB_DRIVER sqlite|mysql). Kata sandi dari config/env, tidak pernah dicatat.
  */
 /**
@@ -214,6 +325,11 @@ function buildUpdateStatus(string $appDir, Auth\AuthKit $auth, Runtime\Definitio
         static fn(): array => $defs->pages(),
         $logger,
     );
+}
+
+function registerHome(Core\Router $router, Auth\AuthKit $auth, Runtime\Definitions $defs): void
+{
+    (new Runtime\HomeRedirect(static fn(): ?Contracts\Identity => $auth->manager->current(), static fn(): array => $defs->pages()))->registerRoutes($router);
 }
 
 function connectDatabase(string $appDir): Runtime\Connection

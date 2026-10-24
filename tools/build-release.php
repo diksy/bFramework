@@ -10,6 +10,9 @@ declare(strict_types=1);
  * Pemakaian: php tools/build-release.php [keluaran.zip]
  */
 
+defined('APP_BOOTED') || define('APP_BOOTED', true);
+require_once dirname(__DIR__) . '/src/app/core/Update/UpdatePaths.php';
+
 const RELEASE_ROOTS = ['app', 'public_html'];
 /** Pola jalur relatif (terhadap src/) yang tidak boleh masuk zip. */
 const RELEASE_FORBIDDEN = [
@@ -58,6 +61,23 @@ function releaseForbidden(string $rel): bool
     return false;
 }
 
+/**
+ * Isi MANIFEST.sha256 untuk $files: hanya jalur yang diterima UpdatePaths::inManifest (aturan yang sama dengan
+ * CoreManifest, sehingga manifest selalu lolos load() dan rilis baru diff-nya bersih). File tetap ada di zip.
+ *
+ * @param list<string> $files
+ */
+function releaseManifest(string $srcDir, array $files): string
+{
+    $manifest = '';
+    foreach ($files as $rel) {
+        if (\bFramework\Update\UpdatePaths::inManifest($rel)) {
+            $manifest .= hash_file('sha256', rtrim($srcDir, '/') . '/' . $rel) . '  ' . $rel . "\n";
+        }
+    }
+    return $manifest;
+}
+
 /** @return list<string> daftar file di zip (tanpa MANIFEST) */
 function buildRelease(string $srcDir, string $outZip): array
 {
@@ -69,12 +89,10 @@ function buildRelease(string $srcDir, string $outZip): array
     if ($zip->open($outZip, ZipArchive::CREATE | ZipArchive::EXCL) !== true) {
         throw new RuntimeException('Zip tidak dapat dibuat');
     }
-    $manifest = '';
     foreach ($files as $rel) {
         $zip->addFile(rtrim($srcDir, '/') . '/' . $rel, $rel);
-        $manifest .= hash_file('sha256', rtrim($srcDir, '/') . '/' . $rel) . '  ' . $rel . "\n";
     }
-    $zip->addFromString('MANIFEST.sha256', $manifest);
+    $zip->addFromString('MANIFEST.sha256', releaseManifest($srcDir, $files));
     if (!$zip->close()) {
         throw new RuntimeException('Zip gagal ditutup');
     }
