@@ -202,14 +202,14 @@ final class InstallAuthTest extends TestCase
 
         // TOTP: aktifkan, logout, login butuh kode; kode salah ditolak; kode dipakai ulang ditolak.
         $u->get('/auth/2fa');
-        $begin = $u->post('/auth/2fa/begin');
+        $begin = $u->post('/auth/2fa/begin', ['password' => $pw2]);
         self::assertSame(200, $begin->status);
         if (preg_match('/Kunci: ([A-Z2-7]+)/', $begin->body, $m) !== 1) {
             self::fail('kunci TOTP tidak tampil');
         }
         $secret = $m[1];
         $codeNow = Totp::code($secret, Totp::stepAt(time()));
-        $conf = $u->post('/auth/2fa/confirm', ['code' => $codeNow]);
+        $conf = $u->post('/auth/2fa/confirm', ['code' => $codeNow, 'password' => $pw2]);
         self::assertSame(200, $conf->status);
         self::assertStringContainsString('Simpan kode pemulihan', $conf->body);
         $u->post('/logout');

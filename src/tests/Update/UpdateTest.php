@@ -508,6 +508,7 @@ final class UpdateTest extends TestCase
                 new CoreManifest($this->root),
                 new UpdatePackage($this->root, null),
                 static fn(): array => [],
+                $kit->stepUp ?? throw new \LogicException('stepUp'),
                 $h->logger,
             ))->registerRoutes($router);
         };

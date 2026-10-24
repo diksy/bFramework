@@ -152,19 +152,24 @@ final class TotpTest extends TestCase
         $b = $this->h->browser();
         $b->login('ada@contoh.test');
         $b->get('/auth/2fa');
-        $page = $b->post('/auth/2fa/begin');
+        $page = $b->post('/auth/2fa/begin', ['password' => AuthHarness::PASSWORD]);
         self::assertSame(200, $page->status);
-        self::assertSame(422, $b->post('/auth/2fa/confirm', ['code' => '000000'])->status);
+        self::assertSame(422, $b->post('/auth/2fa/confirm', ['code' => '000000', 'password' => AuthHarness::PASSWORD])->status);
         self::assertFalse($this->h->accounts->find($uid)?->totpEnabled);
         $secret = (string) $this->h->twofa()->pendingSecret($this->h->accounts->find($uid) ?? throw new \RuntimeException());
         $this->h->clock->advance(30);
-        $ok = $b->post('/auth/2fa/confirm', ['code' => Totp::code($secret, Totp::stepAt($this->h->clock->t))]);
+        $ok = $b->post('/auth/2fa/confirm', ['code' => Totp::code($secret, Totp::stepAt($this->h->clock->t)), 'password' => AuthHarness::PASSWORD]);
         self::assertSame(200, $ok->status);
         self::assertTrue($this->h->accounts->find($uid)?->totpEnabled);
         self::assertSame(10, preg_match_all('/<code>[a-z2-7]{5}-[a-z2-7]{5}<\/code>/', $ok->body));
         self::assertSame(401, $b->post('/auth/2fa/disable', ['password' => 'salah-salah-salah'])->status);
         self::assertTrue($this->h->accounts->find($uid)?->totpEnabled);
-        self::assertSame(302, $b->post('/auth/2fa/disable', ['password' => AuthHarness::PASSWORD])->status);
+        // Nonaktifkan butuh password DAN kode lama (SEC-3/S4).
+        self::assertSame(401, $b->post('/auth/2fa/disable', ['password' => AuthHarness::PASSWORD])->status);
+        self::assertTrue($this->h->accounts->find($uid)?->totpEnabled);
+        $this->h->clock->advance(30);
+        $code = Totp::code($secret, Totp::stepAt($this->h->clock->t));
+        self::assertSame(302, $b->post('/auth/2fa/disable', ['password' => AuthHarness::PASSWORD, 'code' => $code])->status);
         self::assertFalse($this->h->accounts->find($uid)?->totpEnabled);
     }
 

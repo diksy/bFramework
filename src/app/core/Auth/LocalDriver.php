@@ -102,6 +102,8 @@ final class LocalDriver implements AuthDriver
         $router->add('GET', '/login', $h('loginForm'));
         $router->add('POST', '/login', $h('loginPost'));
         $router->add('POST', '/logout', $h('logoutPost'));
+        $router->add('GET', StepUp::PATH, $h('stepUpForm'));
+        $router->add('POST', StepUp::PATH, $h('stepUpPost'));
         $router->add('GET', '/auth/otp', $h('otpForm'));
         $router->add('POST', '/auth/otp', $h('otpPost'));
         $router->add('GET', '/auth/forgot', $h('forgotForm'));
@@ -469,7 +471,92 @@ final class LocalDriver implements AuthDriver
         ]);
     }
 
+    // ---------- step-up admin (S3) ----------
+
+    /** @param array<string,string> $p */
+    private function stepUpForm(Request $r, array $p): Response
+    {
+        $acc = $this->requireAccount();
+        if ($acc instanceof Response) {
+            return $acc;
+        }
+        $next = StepUp::safeNext($r->query['next'] ?? null);
+        if ($next !== null) {
+            $this->session->set(StepUp::NEXT_KEY, $next);
+        }
+        return $this->stepUpPage($acc, [], 200);
+    }
+
+    /** @param array<string,string> $p */
+    private function stepUpPost(Request $r, array $p): Response
+    {
+        $acc = $this->requireAccount();
+        if ($acc instanceof Response) {
+            return $acc;
+        }
+        $this->throttle->login($acc->email, $r->remoteAddr); // batas yang sama dengan login
+        $ok = $this->verifyPassword($acc, self::str($r->post['password'] ?? null));
+        if ($ok && $acc->totpEnabled) {
+            $this->throttle->otp($acc->id, $r->remoteAddr);
+            $ok = $this->twofa !== null && $this->twofa->verifyLogin($acc, self::str($r->post['code'] ?? null));
+        }
+        if (!$ok) {
+            $this->logger?->warning('Step-up admin gagal', ['user_id' => $acc->id]);
+            return $this->stepUpPage($acc, ['Password atau kode salah.'], 401);
+        }
+        $this->auth->markStepUp();
+        $next = StepUp::safeNext($this->session->get(StepUp::NEXT_KEY)) ?? '/admin/pengguna';
+        $this->session->forget(StepUp::NEXT_KEY);
+        return Response::redirect($next);
+    }
+
+    /** @param list<string> $errors */
+    private function stepUpPage(Account $acc, array $errors, int $status): Response
+    {
+        $fields = [self::field('password', 'Password', 'password', 'current-password')];
+        if ($acc->totpEnabled) {
+            $fields[] = self::field('code', 'Kode 2FA', 'text', 'one-time-code');
+        }
+        return $this->panel('Konfirmasi identitas', $status, [
+            'errors' => $errors,
+            'paragraphs' => ['Halaman administrasi memerlukan login ulang. Masukkan password' . ($acc->totpEnabled ? ' dan kode 2FA' : '') . ' Anda.'],
+            'forms' => [['id' => 's', 'action' => StepUp::PATH, 'submit' => 'Lanjutkan', 'fields' => $fields]],
+        ], true);
+    }
+
     // ---------- pengaturan 2FA ----------
+
+    private function verifyPassword(Account $acc, string $pw): bool
+    {
+        $valid = $this->hasher->verify($pw, $acc->passwordHash ?? $this->hasher->dummyHash());
+        return $valid && $acc->passwordHash !== null;
+    }
+
+    /** @return list<array<string,mixed>> */
+    private function pwFields(): array
+    {
+        return [self::field('password', 'Password', 'password', 'current-password')];
+    }
+
+    /** @return array<string,mixed> */
+    private function disableForm(): array
+    {
+        return ['id' => 'd', 'action' => '/auth/2fa/disable', 'submit' => 'Nonaktifkan 2FA', 'fields' => [
+            self::field('password', 'Password', 'password', 'current-password'),
+            self::field('code', 'Kode 2FA atau kode pemulihan', 'text', 'one-time-code'),
+        ]];
+    }
+
+    /** Perubahan 2FA: cabut ingat-saya dan sesi lain, lalu beri tahu pemilik lewat email (antrean tunda). */
+    private function twofaChanged(Account $acc, string $what): void
+    {
+        $this->remember->revokeAll($acc->id);
+        $this->auth->revokeOtherSessions($acc->id);
+        $this->queueMail($acc->email, 'Perubahan autentikasi dua langkah',
+            "Halo,\n\n2FA pada akun Anda baru saja {$what}. Semua perangkat lain dikeluarkan.\n\n"
+            . "Jika ini bukan Anda, segera atur ulang password Anda dan hubungi administrator.\n");
+        $this->logger?->info('2FA berubah', ['user_id' => $acc->id, 'aksi' => $what]);
+    }
 
     /** @param array<string,string> $p */
     private function twofaForm(Request $r, array $p): Response
@@ -480,14 +567,13 @@ final class LocalDriver implements AuthDriver
         }
         if ($acc->totpEnabled) {
             return $this->panel('Autentikasi dua langkah', 200, [
-                'paragraphs' => ['2FA aktif. Untuk menonaktifkan, masukkan password Anda.'],
-                'forms' => [['id' => 'd', 'action' => '/auth/2fa/disable', 'submit' => 'Nonaktifkan 2FA',
-                    'fields' => [self::field('password', 'Password', 'password', 'current-password')]]],
+                'paragraphs' => ['2FA aktif. Untuk menonaktifkan, masukkan password dan kode 2FA (atau kode pemulihan) Anda.'],
+                'forms' => [$this->disableForm()],
             ], true);
         }
         return $this->panel('Autentikasi dua langkah', 200, [
-            'paragraphs' => ['2FA belum aktif.'],
-            'forms' => [['id' => 'b', 'action' => '/auth/2fa/begin', 'submit' => 'Mulai aktifkan 2FA', 'fields' => []]],
+            'paragraphs' => ['2FA belum aktif. Masukkan password Anda untuk memulai.'],
+            'forms' => [['id' => 'b', 'action' => '/auth/2fa/begin', 'submit' => 'Mulai aktifkan 2FA', 'fields' => $this->pwFields()]],
         ], true);
     }
 
@@ -501,6 +587,13 @@ final class LocalDriver implements AuthDriver
         if ($acc->totpEnabled) {
             return Response::redirect('/auth/2fa');
         }
+        $this->throttle->login('2fa-setup:' . $acc->id, $r->remoteAddr);
+        if (!$this->verifyPassword($acc, self::str($r->post['password'] ?? null))) {
+            return $this->panel('Autentikasi dua langkah', 401, [
+                'errors' => ['Password salah.'],
+                'forms' => [['id' => 'b', 'action' => '/auth/2fa/begin', 'submit' => 'Mulai aktifkan 2FA', 'fields' => $this->pwFields()]],
+            ], true);
+        }
         $secret = $this->twofa->begin($acc->id);
         return $this->confirmPage($secret, $acc->email, [], 200);
     }
@@ -513,13 +606,18 @@ final class LocalDriver implements AuthDriver
             return $acc instanceof Response ? $acc : Response::redirect('/');
         }
         $this->throttle->otp($acc->id, $r->remoteAddr);
+        $secret = $this->twofa->pendingSecret($acc);
+        if ($secret === null) {
+            return Response::redirect('/auth/2fa');
+        }
+        if (!$this->verifyPassword($acc, self::str($r->post['password'] ?? null))) {
+            return $this->confirmPage($secret, $acc->email, ['Password salah.'], 401);
+        }
         $codes = $this->twofa->confirm($acc->id, self::str($r->post['code'] ?? null));
         if ($codes === null) {
-            $secret = $this->twofa->pendingSecret($acc);
-            return $secret === null
-                ? Response::redirect('/auth/2fa')
-                : $this->confirmPage($secret, $acc->email, ['Kode salah.'], 422);
+            return $this->confirmPage($secret, $acc->email, ['Kode salah.'], 422);
         }
+        $this->twofaChanged($acc, 'diaktifkan');
         return $this->panel('2FA aktif', 200, [
             'paragraphs' => ['Simpan kode pemulihan ini di tempat aman. Setiap kode hanya berlaku sekali dan tidak akan ditampilkan lagi.'],
             'codes' => $codes,
@@ -534,15 +632,19 @@ final class LocalDriver implements AuthDriver
             return $acc instanceof Response ? $acc : Response::redirect('/');
         }
         $this->throttle->login('2fa-disable:' . $acc->id, $r->remoteAddr);
-        $pw = self::str($r->post['password'] ?? null);
-        if ($acc->passwordHash === null || !$this->hasher->verify($pw, $acc->passwordHash)) {
+        $ok = $this->verifyPassword($acc, self::str($r->post['password'] ?? null));
+        if ($ok && $acc->totpEnabled) {
+            $this->throttle->otp($acc->id, $r->remoteAddr);
+            $ok = $this->twofa->verifyLogin($acc, self::str($r->post['code'] ?? null)); // OTP lama wajib
+        }
+        if (!$ok) {
             return $this->panel('Autentikasi dua langkah', 401, [
-                'errors' => ['Password salah.'],
-                'forms' => [['id' => 'd', 'action' => '/auth/2fa/disable', 'submit' => 'Nonaktifkan 2FA',
-                    'fields' => [self::field('password', 'Password', 'password', 'current-password')]]],
+                'errors' => ['Password atau kode salah.'],
+                'forms' => [$this->disableForm()],
             ], true);
         }
         $this->twofa->disable($acc->id);
+        $this->twofaChanged($acc, 'dinonaktifkan');
         $this->session->flash('ok', '2FA dinonaktifkan.');
         return Response::redirect('/auth/2fa');
     }
@@ -634,7 +736,7 @@ final class LocalDriver implements AuthDriver
                 'Lalu masukkan kode 6 digit yang ditampilkan untuk konfirmasi.',
             ],
             'forms' => [['id' => 'c', 'action' => '/auth/2fa/confirm', 'submit' => 'Konfirmasi',
-                'fields' => [self::field('code', 'Kode', 'text', 'one-time-code')]]],
+                'fields' => [self::field('password', 'Password', 'password', 'current-password'), self::field('code', 'Kode', 'text', 'one-time-code')]]],
         ], true);
     }
 
