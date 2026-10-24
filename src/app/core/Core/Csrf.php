@@ -11,7 +11,7 @@ use bFramework\Contracts\SessionStore;
 /** SEC-REQ-01: token CSRF per sesi, dibandingkan dengan hash_equals. */
 final class Csrf
 {
-    private const KEY = '_csrf';
+    public const KEY = '_csrf';
 
     public function __construct(private readonly SessionStore $session)
     {
@@ -24,6 +24,14 @@ final class Csrf
             $t = bin2hex(random_bytes(32));
             $this->session->set(self::KEY, $t);
         }
+        return $t;
+    }
+
+    /** SEC-SESS-02: token lama dibuang; panggil bersama SessionStore::regenerate(). */
+    public function rotate(): string
+    {
+        $t = bin2hex(random_bytes(32));
+        $this->session->set(self::KEY, $t);
         return $t;
     }
 
