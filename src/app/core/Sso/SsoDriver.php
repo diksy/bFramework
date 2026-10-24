@@ -330,7 +330,7 @@ final class SsoDriver implements AuthDriver
             return $this->failPage('Akun belum terdaftar', 'Akun Anda belum didaftarkan di aplikasi ini. Hubungi administrator.', 403);
         }
         $email = $v['email'] === null ? null : AccountStore::normalizeEmail($v['email']);
-        if ($email === null || $v['emailVerified'] === false) {
+        if ($email === null || $v['emailVerified'] !== true) {
             return $this->failPage('Akun tidak dapat dibuat', 'Server SSO tidak mengirim alamat email yang terverifikasi.', 403);
         }
         $name = self::cleanName($v['name'], $email);

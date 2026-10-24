@@ -68,12 +68,13 @@ final class HttpClient
         }
         $timeout = max(1, min($timeout, self::MAX_TIMEOUT));
         $headers = $this->cleanHeaders($headers);
-        $origHost = null;
+        $origOrigin = null;
         for ($hop = 0; $hop <= self::MAX_REDIRECTS; $hop++) {
             [$host, $port, $path, $ip] = $this->validate($url);
-            $origHost ??= $host;
+            $origin = $host . ':' . $port; // skema selalu https; origin = host + port
+            $origOrigin ??= $origin;
             $send = $headers;
-            if ($host !== $origHost) {
+            if ($origin !== $origOrigin) {
                 // Jangan bocorkan kredensial lintas host.
                 foreach (array_keys($send) as $k) {
                     if (in_array(strtolower($k), ['authorization', 'cookie', 'proxy-authorization'], true)) {
@@ -95,6 +96,10 @@ final class HttpClient
                 if (in_array($res->status, [301, 302, 303], true)) {
                     $method = ($method === 'HEAD') ? 'HEAD' : 'GET';
                     $body = null;
+                }
+                if ($body !== null && self::originOf($url) !== $origin) {
+                    // 307/308 akan mengulang body (code, code_verifier, refresh_token) ke origin lain: tolak.
+                    throw new BlockedDestination('Redirect ber-body ke origin lain ditolak');
                 }
                 continue;
             }
@@ -141,6 +146,16 @@ final class HttpClient
             $path .= '?' . $p['query'];
         }
         return [$host, $port, $path, $ips[0]];
+    }
+
+    /** Origin (host:port) dari URL https; null bila tak dapat diurai (validate() menolaknya kemudian). */
+    private static function originOf(string $url): ?string
+    {
+        $p = parse_url($url);
+        if ($p === false || !isset($p['host'])) {
+            return null;
+        }
+        return strtolower(trim($p['host'], '[]')) . ':' . ($p['port'] ?? 443);
     }
 
     private function resolveLocation(string $base, string $loc): string

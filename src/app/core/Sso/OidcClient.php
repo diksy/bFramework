@@ -23,6 +23,10 @@ final class OidcClient
     private const JWKS = 'jwks';
     private const DEFAULT_TTL = 3600;
     private const MAX_TTL = 86400;
+    /** S2: TTL minimum (clamp no-cache/no-store/max-age=0) agar fetch keluar tidak bisa dipicu tiap request. */
+    public const MIN_TTL = 60;
+    /** S2: negative cache bila fetch gagal. */
+    private const NEGATIVE_TTL = 30;
     private const STALE_GRACE = 86400;
     /** SSO-07: refetch JWKS karena kid asing maksimal sekali per menit. */
     private const KID_REFETCH_INTERVAL = 60;
@@ -55,8 +59,10 @@ final class OidcClient
             return $doc;
         }
         try {
+            $this->assertNotBackedOff(self::DISCOVERY);
             [$doc, $ttl] = self::fetchDiscovery($this->http, $this->cfg->issuer);
         } catch (OidcException $e) {
+            $this->markFailed(self::DISCOVERY, $e);
             $stale = $c['doc'] ?? null;
             if (is_array($stale) && is_int($c['exp'] ?? null) && $c['exp'] + self::STALE_GRACE > $now
                 && ($c['issuer'] ?? null) === $this->cfg->issuer) {
@@ -83,8 +89,10 @@ final class OidcClient
         }
         $uri = $this->endpoint('jwks_uri');
         try {
+            $this->assertNotBackedOff(self::JWKS);
             [$doc, $ttl] = self::fetchJwks($this->http, $uri);
         } catch (OidcException $e) {
+            $this->markFailed(self::JWKS, $e);
             $stale = $c['doc'] ?? null;
             if (is_array($stale) && is_int($c['exp'] ?? null) && $c['exp'] + self::STALE_GRACE > $now
                 && ($c['issuer'] ?? null) === $this->cfg->issuer) {
@@ -96,6 +104,22 @@ final class OidcClient
         }
         $this->cache->put(self::JWKS, ['issuer' => $this->cfg->issuer, 'doc' => $doc, 'exp' => $now + $ttl]);
         return $doc;
+    }
+
+    /** S2: setelah fetch gagal, jangan mencoba lagi selama NEGATIVE_TTL detik. */
+    private function assertNotBackedOff(string $what): void
+    {
+        $n = $this->cache->get('neg_' . $what);
+        if ($n !== null && is_int($n['exp'] ?? null) && $n['exp'] > $this->now()) {
+            throw new BackedOff('Pengambilan ' . $what . ' ditunda sementara setelah kegagalan.');
+        }
+    }
+
+    private function markFailed(string $what, OidcException $e): void
+    {
+        if (!$e instanceof BackedOff) {
+            $this->cache->put('neg_' . $what, ['exp' => $this->now() + self::NEGATIVE_TTL]);
+        }
     }
 
     /**
@@ -318,10 +342,10 @@ final class OidcClient
             return self::DEFAULT_TTL;
         }
         if (preg_match('/\b(no-store|no-cache)\b/', $cc) === 1) {
-            return 0;
+            return self::MIN_TTL;
         }
         if (preg_match('/\bmax-age\s*=\s*(\d{1,9})\b/', $cc, $m) === 1) {
-            return min((int) $m[1], self::MAX_TTL);
+            return max(self::MIN_TTL, min((int) $m[1], self::MAX_TTL));
         }
         return self::DEFAULT_TTL;
     }

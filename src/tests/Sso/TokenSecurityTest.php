@@ -157,13 +157,13 @@ final class TokenSecurityTest extends TestCase
         self::assertSame(2, $idp->hits['discovery']);
     }
 
-    public function test_SSO_07_no_store_selalu_fetch_ulang_dan_cache_bukan_php(): void
+    public function test_SSO_07_no_store_di_clamp_ke_60_dtk_dan_cache_bukan_php(): void
     {
         $idp = $this->h->idp;
         $idp->cacheControl = 'no-store';
         $this->h->oidc()->verifyToken($idp->sign($idp->claims()));
         $this->h->oidc()->verifyToken($idp->sign($idp->claims()));
-        self::assertSame(2, $idp->hits['jwks']);
+        self::assertSame(1, $idp->hits['jwks'], 'S2: TTL 0 di-clamp ke 60 dtk');
         foreach (glob($this->h->a->dir . '/sso/*') ?: [] as $f) {
             self::assertStringEndsNotWith('.php', $f);
             self::assertSame(0600, fileperms($f) & 0777, $f);
