@@ -132,8 +132,21 @@ final class Definitions
         return $t;
     }
 
+    /** True bila sudah ada versi compile aktif. */
+    public function built(): bool
+    {
+        return $this->version !== null || $this->store->current() !== null;
+    }
+
+    /**
+     * Tanpa cache -> allowlist kosong: setiap kueri model ditolak (fail-closed); rute definisi juga tak ada.
+     * Rute non-definisi (auth, reset, install) tetap dapat dirakit.
+     */
     public function allowlist(): IdentifierAllowlist
     {
+        if (!$this->built()) {
+            return new IdentifierAllowlist([]);
+        }
         return new IdentifierAllowlist($this->tables());
     }
 

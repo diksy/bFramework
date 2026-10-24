@@ -73,9 +73,13 @@ if (!$configured) {
     return;
 }
 
-// Rute dari hasil compile (lazy: hanya dibaca bila versi aktif ada).
+$conn = bFramework\connectDatabase($app);
+// Build pertama + tabel model sebelum rute dibaca. Belum siap/gagal -> rute definisi tidak dimuat (fail-closed).
+$compiledReady = bFramework\ensureCompiled($app, $conn, $logger);
+
+// Rute dari hasil compile (lazy: hanya dibaca bila versi aktif ada dan tabelnya siap).
 $router = new Router();
-$current = @file_get_contents($app . '/storage/cache/current');
+$current = $compiledReady ? @file_get_contents($app . '/storage/cache/current') : false;
 if (is_string($current) && preg_match('/^v_[a-f0-9]{6,32}$/', trim($current)) === 1) {
     $routesFile = $app . '/storage/cache/' . trim($current) . '/routes.php';
     if (is_file($routesFile)) {
@@ -89,7 +93,6 @@ if (is_string($current) && preg_match('/^v_[a-f0-9]{6,32}$/', trim($current)) ==
 // Perakitan autentikasi (M10) + runtime halaman (M9). HTTPS ditentukan dari SAPI saja (header proxy tidak dipercaya).
 // ALLOWED_HOSTS kosong -> host dari APP_URL; HostGuard selalu dipasang (SEC-REQ-03, fail-closed).
 $hosts = bFramework\Install\HostPolicy::allowed(Config::get('ALLOWED_HOSTS', []), $appUrl);
-$conn = bFramework\connectDatabase($app);
 $auth = bFramework\buildAuth($app, $conn, $https, $logger);
 $defs = new bFramework\Runtime\Definitions(new bFramework\Runtime\CacheStore($app . '/storage/cache'));
 [$uploads, $fileCtl] = bFramework\buildUploads($app, $conn, $defs, new bFramework\Runtime\CurrentIdentity($auth->session), $logger);
@@ -108,6 +111,7 @@ if (random_int(1, 200) === 1) {
     });
 }
 bFramework\buildUpdateStatus($app, $auth, $defs, $logger)->registerRoutes($router);
+bFramework\registerHome($router, $auth, $defs);
 $auth->driver->registerRoutes($router);
 $auth->admin?->registerRoutes($router);
 // Halaman cache anonim (GET tanpa query/cookie sesi) tidak memulai sesi sama sekali, jadi tanpa Set-Cookie (F8).

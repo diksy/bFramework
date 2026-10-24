@@ -92,7 +92,12 @@ final class ReleaseZipTest extends TestCase
             self::assertSame($hash, hash('sha256', (string) $z->getFromName($path)), $path);
             $listed[] = $path;
         }
-        $files = array_values(array_diff($this->entries($z), ['MANIFEST.sha256']));
+        // Aturan manifest = UpdatePaths::inManifest (sama dengan CoreManifest); mis. storage/.gitkeep tidak ikut.
+        $files = array_values(array_filter(
+            array_diff($this->entries($z), ['MANIFEST.sha256']),
+            static fn(string $f): bool => \bFramework\Update\UpdatePaths::inManifest($f),
+        ));
+        self::assertNotContains('app/storage/.gitkeep', $listed);
         sort($listed);
         self::assertSame($files, $listed);
     }

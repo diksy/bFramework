@@ -55,11 +55,23 @@ final class UpdatePaths
                 if ($base === '.htaccess') {
                     return true;
                 }
+                if ($base === 'LICENSE' && $pre === 'app/core/') {
+                    return true; // lisensi pustaka vendor (tanpa ekstensi) ikut paket
+                }
                 $list = $pre === 'public_html/assets/' ? self::ASSET_EXT : self::CODE_EXT;
                 return in_array($ext, $list, true);
             }
         }
         return false;
+    }
+
+    /**
+     * Satu-satunya aturan isi MANIFEST.sha256: tools/build-release.php memakainya untuk menulis,
+     * CoreManifest memakainya untuk membandingkan. Storage/config/definisi/ekstensi tidak pernah masuk.
+     */
+    public static function inManifest(string $p): bool
+    {
+        return self::inScope($p);
     }
 
     /** Apakah jalur (dari MANIFEST.sha256) termasuk lingkup core yang diperiksa diff. */

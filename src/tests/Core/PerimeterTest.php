@@ -78,6 +78,18 @@ final class PerimeterTest extends TestCase
         self::assertSame('nosniff', $res->headers['X-Content-Type-Options']);
     }
 
+    public function test_INT_F2_csp_handler_dipertahankan_dan_respons_lain_dapat_csp_default(): void
+    {
+        $sb = "default-src 'none'; sandbox";
+        $mw = new SecurityHeaders();
+        $kept = $mw->process(new Request('GET', '/'), static fn(Request $r): Response => Response::html('x')->withHeader('Content-Security-Policy', $sb));
+        self::assertSame($sb, $kept->headers['Content-Security-Policy']);
+        self::assertSame('nosniff', $kept->headers['X-Content-Type-Options']);
+        $def = $mw->process(new Request('GET', '/'), $this->ok());
+        self::assertStringStartsWith("default-src 'self'", $def->headers['Content-Security-Policy']);
+        self::assertStringNotContainsString('sandbox', $def->headers['Content-Security-Policy']);
+    }
+
     public function test_SEC_OUT_02_csp_memakai_nonce_dan_menolak_nonce_berbahaya(): void
     {
         $res = (new SecurityHeaders(static fn(): string => 'abc123XYZ'))->process(new Request('GET', '/'), $this->ok());
