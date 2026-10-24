@@ -39,9 +39,18 @@ final class Response
         return new self($body, $status, ['Content-Type' => 'application/json; charset=utf-8']);
     }
 
-    public static function redirect(string $url, int $status = 302): self
+    /**
+     * Cegah open redirect (SEC-REQ-04): tujuan harus path relatif ("/..." bukan "//" atau "/\\"),
+     * atau URL http(s) absolut yang host-nya ada di $allowedHosts (huruf kecil, tanpa port).
+     *
+     * @param list<string> $allowedHosts
+     */
+    public static function redirect(string $url, int $status = 302, array $allowedHosts = []): self
     {
         self::assertHeaderSafe($url);
+        if (!self::isSafeRedirect($url, $allowedHosts)) {
+            throw new InvalidArgumentException('Tujuan redirect tidak diizinkan');
+        }
         if ($status < 300 || $status > 399) {
             throw new InvalidArgumentException('Status redirect harus 3xx');
         }
@@ -60,7 +69,7 @@ final class Response
     }
 
     /**
-     * Default aman: path "/", httponly, samesite Lax. Opsi: expires(int), path, domain, secure(bool), httponly(bool), samesite.
+     * Default aman: path "/", secure, httponly, samesite Lax (HTTP polos harus eksplisit secure=false). Opsi: expires(int), path, domain, secure(bool), httponly(bool), samesite.
      *
      * @param array<string,mixed> $options
      */
@@ -73,7 +82,7 @@ final class Response
         if (preg_match('/[;,\s]/', $value) === 1) {
             throw new InvalidArgumentException('Nilai cookie tidak valid');
         }
-        $options += ['path' => '/', 'httponly' => true, 'samesite' => 'Lax'];
+        $options += ['path' => '/', 'secure' => true, 'httponly' => true, 'samesite' => 'Lax'];
         $same = $options['samesite'];
         if (!is_string($same) || !in_array($same, ['Lax', 'Strict', 'None'], true)) {
             throw new InvalidArgumentException('samesite tidak valid');
@@ -110,6 +119,23 @@ final class Response
     public function withoutBody(): self
     {
         return new self('', $this->status, $this->headers, $this->cookies);
+    }
+
+    /** @param list<string> $allowedHosts */
+    private static function isSafeRedirect(string $url, array $allowedHosts): bool
+    {
+        if ($url === '' || preg_match('/[\\\\\s]/', $url) === 1) {
+            return false;
+        }
+        if ($url[0] === '/') {
+            return !str_starts_with($url, '//');
+        }
+        $parts = parse_url($url);
+        if ($parts === false || !isset($parts['scheme'], $parts['host']) || isset($parts['user']) || isset($parts['pass'])) {
+            return false;
+        }
+        return in_array(strtolower($parts['scheme']), ['http', 'https'], true)
+            && in_array(strtolower($parts['host']), $allowedHosts, true);
     }
 
     private static function assertHeaderSafe(string $v): void

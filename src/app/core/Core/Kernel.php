@@ -37,24 +37,35 @@ final class Kernel
 
     public function handle(Request $request): Response
     {
-        try {
-            $res = $this->run($request);
-        } catch (HttpException $e) {
-            $res = self::errorResponse($e->status);
-        } catch (Throwable $e) {
-            $this->logger?->error('Unhandled exception', ['class' => $e::class]);
-            $res = self::errorResponse(500);
-        }
+        $res = $this->run($request);
         return $request->method === 'HEAD' ? $res->withoutBody() : $res;
     }
 
+    /**
+     * Setiap lapisan dibungkus penjaga error sehingga respons error (404, 419, 400 HostGuard, 500)
+     * tetap melewati middleware di luarnya (mis. SecurityHeaders, SEC-PER-03).
+     */
     private function run(Request $request): Response
     {
-        $next = fn(Request $r): Response => $this->router->dispatch($r);
+        $next = fn(Request $r): Response => $this->guard(fn(): Response => $this->router->dispatch($r));
         foreach (array_reverse($this->middleware) as $mw) {
-            $next = static fn(Request $r): Response => $mw->process($r, $next);
+            $inner = $next;
+            $next = fn(Request $r): Response => $this->guard(static fn(): Response => $mw->process($r, $inner));
         }
         return $next($request);
+    }
+
+    /** @param callable():Response $fn */
+    private function guard(callable $fn): Response
+    {
+        try {
+            return $fn();
+        } catch (HttpException $e) {
+            return self::errorResponse($e->status);
+        } catch (Throwable $e) {
+            $this->logger?->error('Unhandled exception', ['class' => $e::class]);
+            return self::errorResponse(500);
+        }
     }
 
     /** Halaman error minimal dan generik; M5 menggantikannya dengan template. */
