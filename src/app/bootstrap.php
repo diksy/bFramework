@@ -195,6 +195,27 @@ function buildBuilder(
 /**
  * Koneksi database dari config (DB_DRIVER sqlite|mysql). Kata sandi dari config/env, tidak pernah dicatat.
  */
+/**
+ * Halaman status pembaruan (M17, baca-saja). Root instalasi = induk app/. Public key dari UpdateKey (placeholder = fail-closed).
+ */
+function buildUpdateStatus(string $appDir, Auth\AuthKit $auth, Runtime\Definitions $defs, ?Contracts\Logger $logger = null): Update\UpdateController
+{
+    $root = dirname($appDir);
+    return new Update\UpdateController(
+        $auth->manager,
+        new Runtime\Authorizer(),
+        $auth->csrf,
+        $auth->session,
+        new Core\Template($appDir . '/core/Update/views', $appDir . '/storage/cache/views'),
+        new Core\Template($appDir . '/core/Core/views', $appDir . '/storage/cache/views'),
+        new Core\RateLimiter($appDir . '/storage/ratelimit', new Auth\SystemClock()),
+        new Update\CoreManifest($root),
+        new Update\UpdatePackage($root, Update\UpdateKey::raw(), $logger),
+        static fn(): array => $defs->pages(),
+        $logger,
+    );
+}
+
 function connectDatabase(string $appDir): Runtime\Connection
 {
     $driver = Core\Config::get('DB_DRIVER', 'sqlite');

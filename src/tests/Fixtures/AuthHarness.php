@@ -47,6 +47,8 @@ final class AuthHarness
     public AccountStore $accounts;
     public string $dir;
     public bool $registration = false;
+    /** @var ?\Closure(Router, AuthKit):void rute tambahan modul lain (mis. M17) */
+    public ?\Closure $extraRoutes = null;
 
     public function __construct()
     {
@@ -156,6 +158,9 @@ final class AuthHarness
         $router = new Router();
         $driver->registerRoutes($router);
         $admin->registerRoutes($router);
+        if ($this->extraRoutes !== null) {
+            ($this->extraRoutes)($router, $kit);
+        }
         return [new Kernel($router, $kit->middleware($router, [], true), $this->logger), $kit, $jar];
     }
 
