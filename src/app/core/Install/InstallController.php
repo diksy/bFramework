@@ -35,6 +35,7 @@ final class InstallController
     {
         $router->add('GET', '/install', fn(Request $r, array $p = []): Response => $this->show($r));
         $router->add('POST', '/install', fn(Request $r, array $p = []): Response => $this->submit($r));
+        $router->add('POST', '/install/canary', fn(Request $r, array $p = []): Response => $this->canary($r));
     }
 
     private function show(Request $r): Response
@@ -42,11 +43,30 @@ final class InstallController
         if ($this->installer->isInstalled()) {
             throw new NotFound();
         }
+        // Mode cadangan: kanari dibuat dulu; token baru dibuat setelah browser membuktikan kanari tidak terunduh (S1)
         $this->installer->ensureToken();
         $scheme = $r->isHttps ? 'https' : 'http';
         $host = strtolower($r->header('host') ?? '');
         return $this->form(['app_url' => HostPolicy::validHost($host) ? $scheme . '://' . $host : '', 'db_driver' => 'sqlite',
             'db_file' => 'app.sqlite', 'db_host' => 'localhost', 'db_port' => '3306', 'smtp_port' => '587', 'smtp_secure' => 'starttls'], [], 200);
+    }
+
+    /** Laporan uji kanari dari browser (CSRF aktif lewat middleware). Hasil: JSON {ok:bool}. */
+    private function canary(Request $r): Response
+    {
+        if ($this->installer->isInstalled()) {
+            throw new NotFound();
+        }
+        if (!$this->limiter->hit('install:' . $r->remoteAddr, $this->rateMax * 3, $this->rateWindow)) {
+            throw new TooManyRequests();
+        }
+        $ok = $this->installer->reportCanary(($r->post['blocked'] ?? '') === '1');
+        if ($ok) {
+            $this->installer->ensureToken();
+        } else {
+            $this->logger?->warning('Uji kanari installer tidak lulus');
+        }
+        return Response::json(['ok' => $ok], $ok ? 200 : 422)->withHeader('Cache-Control', 'no-store');
     }
 
     private function submit(Request $r): Response
@@ -112,13 +132,17 @@ final class InstallController
     private function form(array $values, array $errors, int $status): Response
     {
         $values += ['smtp_secure' => 'starttls', 'db_driver' => 'sqlite'];
+        $canary = $this->installer->ensureCanary();
         return $this->page('install', 'Instalasi', [
+            'canaryUrl' => $canary['url'] ?? '',
+            'canaryContent' => $canary['content'] ?? '',
             'v' => $values,
             'sel' => ['sqlite' => $values['db_driver'] !== 'mysql', 'mysql' => $values['db_driver'] === 'mysql',
                 'starttls' => $values['smtp_secure'] !== 'tls', 'tls' => $values['smtp_secure'] === 'tls'],
             'errors' => $errors,
             'checks' => array_map(static fn(Check $c): array => ['ok' => $c->ok, 'warn' => !$c->ok && !$c->fatal, 'msg' => $c->msg], $this->installer->checks()),
-            'tokenFile' => 'app/storage/' . Installer::TOKEN_FILE,
+            'tokenFile' => 'app/storage/' . Installer::TOKEN_FILE . '<kode-acak>',
+            'blocked' => $this->installer->canaryRequired() && !$this->installer->canaryProven(),
         ], $status);
     }
 
@@ -129,7 +153,7 @@ final class InstallController
         $content = $this->views->render($view, $vars + ['csrf' => $csrf]);
         $html = $this->layout->render('layout', [
             'title' => $title, 'csrf' => $csrf, 'user' => null, 'nav' => [], 'active' => '', 'flash' => [],
-            'scripts' => [], 'bodyClass' => 'auth', 'content' => $content,
+            'scripts' => ($vars['canaryUrl'] ?? '') !== '' ? ['/assets/install-canary.js'] : [], 'bodyClass' => 'auth', 'content' => $content,
         ]);
         return Response::html($html->toString(), $status)->withHeader('Cache-Control', 'no-store');
     }

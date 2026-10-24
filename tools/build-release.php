@@ -7,11 +7,14 @@ declare(strict_types=1);
  * rahasia (config.php, .env, kunci, database, token/lock instal, isi storage) dan dengan MANIFEST.sha256.
  * Dependensi runtime (jika ada) berada di app/core/vendor dan ikut terbawa; vendor/ dev (composer) tidak.
  *
- * Pemakaian: php tools/build-release.php [keluaran.zip]
+ * Gerbang rilis (S16): gagal bila kunci publik update (Update\UpdateKey) masih placeholder, kecuali --allow-placeholder-key (build uji).
+ *
+ * Pemakaian: php tools/build-release.php [--allow-placeholder-key] [keluaran.zip]
  */
 
 defined('APP_BOOTED') || define('APP_BOOTED', true);
 require_once dirname(__DIR__) . '/src/app/core/Update/UpdatePaths.php';
+require_once dirname(__DIR__) . '/src/app/core/Update/UpdateKey.php';
 
 const RELEASE_ROOTS = ['app', 'public_html'];
 /** Pola jalur relatif (terhadap src/) yang tidak boleh masuk zip. */
@@ -21,9 +24,16 @@ const RELEASE_FORBIDDEN = [
     '#^app/config/config\.php$#',
     '#^app/storage/(?!\.gitkeep$)#',                     // isi storage: sesi, log, cache, db, token, lock
     '#\.(sqlite|sqlite3|db|key|pem|log|tmp|bak|orig|swp)$#i',
-    '#(^|/)(install_token|installed\.lock|install\.busy)$#',
+    '#^public_html/_pc/.+\.html$#',                       // sisa halaman cache dev (S16)
+    '#(^|/)(install_token(_[a-f0-9]+)?|canary(_[a-f0-9]+\.txt|\.proven)|installed\.lock|install\.busy)$#',
     '#(^|/)(composer\.(json|lock)|phpunit\.xml|phpstan\.neon)$#',
 ];
+
+/** Gerbang rilis S16: true bila kunci publik update sudah dikonfigurasi (bukan placeholder). */
+function releaseKeyConfigured(): bool
+{
+    return \bFramework\Update\UpdateKey::configured();
+}
 
 /** @return list<string> jalur relatif yang dimasukkan, terurut */
 function releaseFiles(string $srcDir): array
@@ -100,7 +110,17 @@ function buildRelease(string $srcDir, string $outZip): array
 }
 
 if (PHP_SAPI === 'cli' && isset($argv[0]) && realpath($argv[0]) === __FILE__) {
-    $out = $argv[1] ?? dirname(__DIR__) . '/release.zip';
+    $args = array_slice($argv, 1);
+    $allow = in_array('--allow-placeholder-key', $args, true);
+    $args = array_values(array_filter($args, static fn(string $a): bool => $a !== '--allow-placeholder-key'));
+    if (!releaseKeyConfigured()) {
+        if (!$allow) {
+            fwrite(STDERR, "GAGAL: kunci publik update masih placeholder (src/app/core/Update/UpdateKey.php). Jalankan tools/gen-update-key.php dan isi PUBLIC_KEY_HEX; atau pakai --allow-placeholder-key hanya untuk build uji.\n");
+            exit(1);
+        }
+        fwrite(STDERR, "PERINGATAN: build uji dengan kunci placeholder; JANGAN dirilis (updater menolak semua paket).\n");
+    }
+    $out = $args[0] ?? dirname(__DIR__) . '/release.zip';
     $n = count(buildRelease(dirname(__DIR__) . '/src', $out));
     fwrite(STDOUT, "Rilis dibuat: $out ($n file + MANIFEST.sha256)\n");
 }

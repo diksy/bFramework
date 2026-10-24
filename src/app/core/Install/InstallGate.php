@@ -23,7 +23,7 @@ final class InstallGate implements Middleware
         if (!HostPolicy::validHost($host)) {
             throw new BadHost('Host tidak valid');
         }
-        if ($r->path === '/install') {
+        if ($r->path === '/install' || $r->path === '/install/canary') {
             return $next($r);
         }
         if ($r->method === 'GET' || $r->method === 'HEAD') {

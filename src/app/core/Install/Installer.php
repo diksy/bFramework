@@ -30,7 +30,10 @@ use bFramework\Upload\FilesTable;
  */
 final class Installer
 {
-    public const TOKEN_FILE = 'install_token';
+    /** Awalan nama berkas token; nama lengkap `install_token_<hex acak>` (pemilik melihatnya lewat FTP/file manager). */
+    public const TOKEN_FILE = 'install_token_';
+    private const CANARY_PREFIX = 'canary_';
+    private const PROVEN_FILE = 'canary.proven';
     public const LOCK_FILE = 'installed.lock';
     private const BUSY_FILE = 'install.busy';
     private const RESET_TTL = 3600;
@@ -53,30 +56,123 @@ final class Installer
         return is_file($this->storage . '/' . self::LOCK_FILE);
     }
 
-    /** Membuat install_token bila belum ada (tidak pernah dikembalikan/ditampilkan; pemilik membaca file-nya). */
+    /**
+     * Membuat install_token_<hex> bila belum ada (tidak pernah dikembalikan/ditampilkan; pemilik membaca file-nya).
+     * Mode cadangan (app/ di dalam docroot): token TIDAK dibuat sebelum uji kanari terbukti (S1).
+     */
     public function ensureToken(): void
     {
-        if ($this->isInstalled() || is_file($this->tokenPath()) || !$this->ensureDir($this->storage)) {
+        if ($this->isInstalled() || $this->tokenFiles() !== [] || !$this->ensureDir($this->storage)) {
             return;
         }
         // ARCH-02: di mode cadangan penjaga harus berfungsi SEBELUM token ada; bila gagal, token tidak dibuat
         if (!$this->ensureGuard()) {
             return;
         }
+        // S1: penjaga .htaccess tidak cukup (Nginx, AllowOverride None); bukti kanari adalah kontrol utama
+        if ($this->canaryRequired() && !$this->canaryProven()) {
+            return;
+        }
+        $path = $this->storage . '/' . self::TOKEN_FILE . bin2hex(random_bytes(8));
         $old = umask(0077);
-        $fh = @fopen($this->tokenPath(), 'x');
+        $fh = @fopen($path, 'x');
         umask($old);
         if ($fh === false) {
             return; // balapan: pihak lain sudah membuatnya
         }
         fwrite($fh, bin2hex(random_bytes(24)));
         fclose($fh);
-        @chmod($this->tokenPath(), 0600);
+        @chmod($path, 0600);
     }
 
+    /** Jalur berkas token yang ada; bila belum ada, jalur placeholder yang tidak pernah ada. */
     public function tokenPath(): string
     {
-        return $this->storage . '/' . self::TOKEN_FILE;
+        return $this->tokenFiles()[0] ?? $this->storage . '/' . self::TOKEN_FILE;
+    }
+
+    /** @return list<string> */
+    private function tokenFiles(): array
+    {
+        return $this->filesMatching('#^' . self::TOKEN_FILE . '[a-f0-9]{16}$#D');
+    }
+
+    /** @return list<string> jalur penuh berkas di storage/ yang namanya cocok pola */
+    private function filesMatching(string $re): array
+    {
+        $out = [];
+        $names = is_dir($this->storage) ? @scandir($this->storage) : false;
+        foreach ($names === false ? [] : $names as $n) {
+            if (preg_match($re, $n) === 1 && is_file($this->storage . '/' . $n)) {
+                $out[] = $this->storage . '/' . $n;
+            }
+        }
+        sort($out);
+        return $out;
+    }
+
+    /** Layout normal (app/ di luar docroot) tidak butuh kanari. */
+    public function canaryRequired(): bool
+    {
+        return $this->isFallbackLayout();
+    }
+
+    public function canaryProven(): bool
+    {
+        return is_file($this->storage . '/' . self::PROVEN_FILE);
+    }
+
+    /**
+     * Mode cadangan & belum terbukti: pastikan satu berkas kanari acak (isi acak tak bermakna) ada di storage/ dan
+     * kembalikan jalur URL-nya (dari jalur berkas relatif docroot, BUKAN dari input pengguna) beserta isinya.
+     *
+     * @return ?array{url:string,content:string} null bila tidak perlu/tidak dapat dibuat
+     */
+    public function ensureCanary(): ?array
+    {
+        if ($this->isInstalled() || !$this->canaryRequired() || $this->canaryProven() || !$this->ensureDir($this->storage)) {
+            return null;
+        }
+        $files = $this->filesMatching('#^' . self::CANARY_PREFIX . '[a-f0-9]{32}\.txt$#D');
+        if ($files === []) {
+            $path = $this->storage . '/' . self::CANARY_PREFIX . bin2hex(random_bytes(16)) . '.txt';
+            if (@file_put_contents($path, 'bfcanary:' . bin2hex(random_bytes(24))) === false) {
+                return null;
+            }
+            @chmod($path, 0644); // harus terbaca server web agar uji bermakna; isinya tidak berarti apa pun
+            $files = [$path];
+        }
+        $real = realpath($files[0]);
+        $doc = realpath($this->docroot);
+        $content = @file_get_contents($files[0]);
+        if ($real === false || $doc === false || !is_string($content) || !str_starts_with($real, $doc . DIRECTORY_SEPARATOR)) {
+            return null;
+        }
+        $segs = explode(DIRECTORY_SEPARATOR, substr($real, strlen($doc) + 1));
+        return ['url' => '/' . implode('/', array_map('rawurlencode', $segs)), 'content' => $content];
+    }
+
+    /**
+     * Hasil uji dari browser pemilik. Kanari selalu dihapus; hanya bila ada kanari tertunda dan hasilnya "terblokir"
+     * penanda bukti ditulis dan token boleh dibuat. Catatan: laporan datang dari klien; kontrol ini mencegah
+     * salah konfigurasi jujur, bukan penyerang aktif yang memalsukan laporan pada server yang sudah terbuka.
+     */
+    public function reportCanary(bool $blocked): bool
+    {
+        if ($this->isInstalled() || !$this->canaryRequired()) {
+            return false;
+        }
+        $files = $this->filesMatching('#^' . self::CANARY_PREFIX . '[a-f0-9]{32}\.txt$#D');
+        foreach ($files as $f) {
+            @unlink($f);
+        }
+        if ($files === [] || !$blocked) {
+            return false;
+        }
+        $old = umask(0077);
+        $ok = @file_put_contents($this->storage . '/' . self::PROVEN_FILE, (string) $this->clock->now()->getTimestamp()) !== false;
+        umask($old);
+        return $ok;
     }
 
     public function isFallbackLayout(): bool
@@ -116,6 +212,17 @@ final class Installer
         if ($fallback) {
             $guardOk = $this->ensureGuard();
             $out[] = new Check('guard', $guardOk, $guardOk ? 'Penjaga .htaccess app/ aktif (deny-all)' : 'app/.htaccess penjaga tidak ada atau tidak menolak akses dan tidak dapat dibuat; pindahkan app/ ke luar docroot');
+        }
+        if ($fallback) {
+            $proven = $this->canaryProven();
+            $out[] = new Check(
+                'canary',
+                $proven,
+                $proven
+                    ? 'Uji akses berkas kanari lulus: app/storage tidak dapat diunduh lewat web'
+                    : 'Mode cadangan DITOLAK sampai uji akses berkas kanari lulus (browser harus mendapat 403/404, bukan isi berkas). '
+                    . 'Pindahkan app/ ke luar docroot, atau aktifkan .htaccess (Apache: AllowOverride All; Nginx: blokir /app/ di konfigurasi server), lalu muat ulang halaman ini.',
+            );
         }
         $perms = (int) @fileperms($this->storage);
         $loose = is_dir($this->storage) && ($perms & 0002) !== 0;
@@ -202,6 +309,9 @@ final class Installer
         if (!$this->ensureGuard()) {
             throw new InstallRejected('Prasyarat belum terpenuhi: penjaga app/.htaccess tidak dapat dipasang; pindahkan app/ ke luar docroot.', [], 422);
         }
+        if ($this->canaryRequired() && !$this->canaryProven()) {
+            throw new InstallRejected('Mode cadangan ditolak: uji akses berkas kanari belum lulus. Pindahkan app/ ke luar docroot atau aktifkan .htaccess, lalu muat ulang halaman instal.', [], 422);
+        }
         $busy = @fopen($this->storage . '/' . self::BUSY_FILE, 'c');
         if ($busy === false || !flock($busy, LOCK_EX | LOCK_NB)) {
             if ($busy !== false) {
@@ -235,7 +345,12 @@ final class Installer
                 @unlink($this->configFile);
                 throw new InstallRejected('Tidak ditemukan', [], 404);
             }
-            @unlink($this->tokenPath());
+            foreach ($this->tokenFiles() as $t) {
+                @unlink($t);
+            }
+            foreach ($this->filesMatching('#^(' . self::CANARY_PREFIX . '[a-f0-9]{32}\\.txt|' . preg_quote(self::PROVEN_FILE, '#') . ')$#D') as $c) {
+                @unlink($c);
+            }
             $this->logger?->info('Instalasi selesai');
             return new InstallResult($resetUrl);
         } finally {
@@ -246,11 +361,14 @@ final class Installer
 
     private function tokenValid(string $given): bool
     {
-        $stored = @file_get_contents($this->tokenPath());
-        if (!is_string($stored) || strlen(trim($stored)) < 32) {
-            return false;
+        $ok = false;
+        foreach ($this->tokenFiles() as $f) {
+            $stored = @file_get_contents($f);
+            if (is_string($stored) && strlen(trim($stored)) >= 32 && hash_equals(trim($stored), $given)) {
+                $ok = true; // periksa semua berkas (balapan dua GET awal) tanpa keluar dini
+            }
         }
-        return hash_equals(trim($stored), $given);
+        return $ok;
     }
 
     private function connect(InstallInput $in): Connection
@@ -375,10 +493,51 @@ final class Installer
         return true;
     }
 
+    /**
+     * Penjaga efektif: komentar/baris kosong diabaikan; `Require all denied` harus berada di IfModule mod_authz_core.c,
+     * `Order allow,deny` + `Deny from all` di IfModule !mod_authz_core.c; direktif pelonggar (Allow from, Require
+     * all granted/ip/..., Satisfy, Options +Indexes) menggagalkan. Ini hanya lapisan kedua; bukti kanari yang utama.
+     */
     private function guardPresent(): bool
     {
         $h = @file_get_contents($this->appDir . '/.htaccess');
-        return is_string($h) && str_contains($h, 'Require all denied') && str_contains($h, 'Deny from all');
+        if (!is_string($h)) {
+            return false;
+        }
+        $ctx = [];
+        $seen = ['req' => false, 'order' => false, 'deny' => false];
+        foreach (preg_split('/\R/', $h) ?: [] as $raw) {
+            $l = trim($raw);
+            if ($l === '' || $l[0] === '#') {
+                continue;
+            }
+            if (preg_match('#^<IfModule\s+(!?mod_authz_core\.c)>$#i', $l, $m) === 1) {
+                $ctx[] = strtolower($m[1]);
+                continue;
+            }
+            if (preg_match('#^</IfModule>$#i', $l) === 1) {
+                array_pop($ctx);
+                continue;
+            }
+            if (preg_match('#^<#', $l) === 1) {
+                return false; // blok lain (Files/Directory/Limit/...) tidak dikenali: fail-closed
+            }
+            if (preg_match('#^(allow\s+from|satisfy|require\s+(?!all\s+denied$))#i', $l) === 1
+                || preg_match('#^options\s.*\+indexes#i', $l) === 1) {
+                return false;
+            }
+            $in = end($ctx);
+            if (strcasecmp($l, 'Require all denied') === 0 && $in === 'mod_authz_core.c') {
+                $seen['req'] = true;
+            } elseif (preg_match('#^order\s+allow\s*,\s*deny$#i', $l) === 1 && $in === '!mod_authz_core.c') {
+                $seen['order'] = true;
+            } elseif (preg_match('#^deny\s+from\s+all$#i', $l) === 1 && $in === '!mod_authz_core.c') {
+                $seen['deny'] = true;
+            } else {
+                return false; // direktif tak dikenal atau di konteks salah
+            }
+        }
+        return $ctx === [] && $seen['req'] && $seen['order'] && $seen['deny'];
     }
 
     /** Mode normal: true tanpa berbuat apa-apa. Mode cadangan: pastikan penjaga ada dan menolak akses. */

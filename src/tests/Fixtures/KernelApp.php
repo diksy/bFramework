@@ -64,7 +64,7 @@ final class KernelApp
         $a = self::fresh();
         $b = $a->browser();
         $b->get('/install');
-        $token = trim((string) file_get_contents($a->root . '/app/storage/install_token'));
+        $token = self::tokenOf($a->root . '/app/storage');
         $r = $b->post('/install', [
             'app_url' => 'https://' . self::HOST, 'admin_email' => self::ADMIN_EMAIL, 'admin_name' => 'Admin Dummy',
             'db_driver' => 'sqlite', 'db_file' => 'app.sqlite', 'mail_from' => 'noreply@contoh.test',
@@ -84,6 +84,13 @@ final class KernelApp
             throw new \RuntimeException('set password gagal: ' . $res->status);
         }
         return $a;
+    }
+
+    /** Isi install_token_<hex> di $storage (nama acak, S1). */
+    public static function tokenOf(string $storage): string
+    {
+        $f = glob($storage . '/install_token_*') ?: [];
+        return $f === [] ? '' : trim((string) file_get_contents($f[0]));
     }
 
     private function start(): void

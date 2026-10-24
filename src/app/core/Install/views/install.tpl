@@ -5,6 +5,15 @@
   <ul>
     {% for c in checks %}<li>{% if c.ok %}OK{% else %}{% if c.warn %}Peringatan{% else %}GAGAL{% endif %}{% endif %}: {{ c.msg }}</li>{% endfor %}
   </ul>
+  {% if canaryUrl %}
+  <div class="flash err" id="canary-box" data-url="{{ canaryUrl }}" data-content="{{ canaryContent }}" data-report="/install/canary" data-csrf="{{ csrf }}">
+    Mode cadangan: folder app/ berada di dalam docroot. Memeriksa bahwa berkas di app/storage tidak dapat diunduh lewat web...
+    <span id="canary-status">Pemeriksaan butuh JavaScript.</span>
+  </div>
+  {% endif %}
+  {% if blocked %}
+  <p class="muted">Instalasi ditolak sampai pemeriksaan lulus. Token instal belum dibuat. Pindahkan app/ ke luar docroot, atau aktifkan .htaccess (Apache: AllowOverride All) / blokir /app/ di Nginx, lalu muat ulang.</p>
+  {% else %}
   <form method="post" action="/install" autocomplete="off" novalidate>
     <input type="hidden" name="_csrf" value="{{ csrf }}">
     <div class="field"><label for="f-token">Token instal</label>
@@ -44,4 +53,5 @@
     <label class="check"><input type="checkbox" name="registration" value="1"> Izinkan pendaftaran mandiri (default mati)</label>
     <div class="row"><button class="btn primary" type="submit">Pasang</button></div>
   </form>
+  {% endif %}
 </div>

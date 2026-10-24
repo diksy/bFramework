@@ -72,6 +72,13 @@ final class InstallTest extends TestCase
         return trim((string) file_get_contents($i->tokenPath()));
     }
 
+    /** Lulus uji kanari (browser melaporkan terblokir) pada mode cadangan. */
+    private function prove(Installer $i): void
+    {
+        self::assertNotNull($i->ensureCanary());
+        self::assertTrue($i->reportCanary(true));
+    }
+
     /** @param array<string,mixed> $o */
     private function input(string $token, array $o = []): InstallInput
     {
@@ -320,6 +327,7 @@ final class InstallTest extends TestCase
         mkdir($app . '/storage', 0750, true);
         mkdir($app . '/config', 0750, true);
         $i = $this->installer($app);
+        $this->prove($i);
         $byId = [];
         foreach ($i->checks() as $c) {
             $byId[$c->id] = $c;
@@ -344,6 +352,7 @@ final class InstallTest extends TestCase
         mkdir($app . '/config', 0750, true);
         $i = $this->installer($app);
         self::assertFileDoesNotExist($app . '/.htaccess');
+        $this->prove($i);
         $i->ensureToken();
         self::assertFileExists($app . '/.htaccess');
         self::assertStringContainsString('Require all denied', (string) file_get_contents($app . '/.htaccess'));
@@ -357,6 +366,7 @@ final class InstallTest extends TestCase
         mkdir($app . '/config', 0750, true);
         mkdir($app . '/.htaccess'); // penghalang: penjaga tidak bisa ditulis
         $i = $this->installer($app);
+        $this->prove($i);
         $i->ensureToken();
         self::assertFileDoesNotExist($i->tokenPath());
         $byId = [];
@@ -376,8 +386,195 @@ final class InstallTest extends TestCase
         mkdir($app . '/config', 0750, true);
         file_put_contents($app . '/.htaccess', "# kosong\n");
         $i = $this->installer($app);
+        $this->prove($i);
         $i->ensureToken();
         self::assertStringContainsString('Deny from all', (string) file_get_contents($app . '/.htaccess'));
+    }
+
+    public function test_S1_logika_keputusan_kanari_js(): void
+    {
+        exec('command -v node 2>/dev/null', $o, $rc);
+        if ($rc !== 0) {
+            self::markTestSkipped('node tidak tersedia');
+        }
+        $out = [];
+        exec('node ' . escapeshellarg(__DIR__ . '/canary.test.js') . ' 2>&1', $out, $rc);
+        self::assertSame(0, $rc, implode("\n", $out));
+    }
+
+    private function fallbackApp(): string
+    {
+        $app = $this->docroot . '/app';
+        mkdir($app . '/storage', 0750, true);
+        mkdir($app . '/config', 0750, true);
+        return $app;
+    }
+
+    public function test_S1_mode_cadangan_tanpa_bukti_kanari_token_tidak_dibuat_dan_instal_ditolak(): void
+    {
+        $i = $this->installer($this->fallbackApp());
+        $i->ensureToken();
+        self::assertSame([], glob($this->docroot . '/app/storage/install_token*') ?: []);
+        $c = $i->ensureCanary();
+        self::assertNotNull($c);
+        self::assertMatchesRegularExpression('#^/app/storage/canary_[a-f0-9]{32}\.txt$#', $c['url']);
+        self::assertStringStartsWith('bfcanary:', $c['content']);
+        self::assertSame($c['content'], file_get_contents($this->docroot . $c['url']), 'URL kanari dipetakan ke berkas kanari');
+        try {
+            $i->install($this->input('x'));
+            self::fail('Harus ditolak');
+        } catch (InstallRejected $e) {
+            self::assertSame(422, $e->status);
+            self::assertStringContainsString('kanari', $e->getMessage());
+        }
+        $byId = [];
+        foreach ($i->checks() as $ch) {
+            $byId[$ch->id] = $ch;
+        }
+        self::assertFalse($byId['canary']->ok);
+        self::assertTrue($byId['canary']->fatal);
+    }
+
+    public function test_S1_kanari_terbaca_instal_ditolak_kanari_dihapus_dan_tanpa_token(): void
+    {
+        $app = $this->fallbackApp();
+        $i = $this->installer($app);
+        self::assertNotNull($i->ensureCanary());
+        self::assertFalse($i->reportCanary(false), 'browser membaca isi kanari');
+        self::assertSame([], glob($app . '/storage/canary*') ?: [], 'kanari tidak tertinggal');
+        self::assertFalse($i->canaryProven());
+        $i->ensureToken();
+        self::assertSame([], glob($app . '/storage/install_token*') ?: []);
+        self::assertNotNull($i->ensureCanary(), 'kanari baru untuk percobaan ulang');
+        self::assertNotSame('', basename((string) (glob($app . '/storage/canary*')[0] ?? '')));
+    }
+
+    public function test_S1_kanari_403_404_lanjut_token_acak_dan_kanari_tidak_tertinggal(): void
+    {
+        $app = $this->fallbackApp();
+        $i = $this->installer($app);
+        self::assertNotNull($i->ensureCanary());
+        self::assertTrue($i->reportCanary(true));
+        self::assertSame([], glob($app . '/storage/canary_*') ?: [], 'kanari dihapus setelah verifikasi');
+        self::assertTrue($i->canaryProven());
+        self::assertNull($i->ensureCanary(), 'terbukti: tidak perlu kanari lagi');
+        $tok = $this->token($i);
+        self::assertMatchesRegularExpression('#/install_token_[a-f0-9]{16}$#', $i->tokenPath());
+        $i->install($this->input($tok));
+        self::assertTrue($i->isInstalled());
+        self::assertSame([], glob($app . '/storage/install_token*') ?: []);
+        self::assertSame([], glob($app . '/storage/canary*') ?: [], 'penanda bukti dan kanari bersih');
+    }
+
+    public function test_S1_laporan_tanpa_kanari_tertunda_tidak_membuktikan_apa_pun(): void
+    {
+        $i = $this->installer($this->fallbackApp());
+        self::assertFalse($i->reportCanary(true));
+        self::assertFalse($i->canaryProven());
+    }
+
+    public function test_S1_layout_normal_tanpa_kanari(): void
+    {
+        $i = $this->installer();
+        self::assertFalse($i->canaryRequired());
+        self::assertNull($i->ensureCanary());
+        self::assertFalse($i->reportCanary(true));
+        $tok = $this->token($i);
+        self::assertSame([], glob($this->app . '/storage/canary*') ?: []);
+        $i->install($this->input($tok));
+        self::assertTrue($i->isInstalled());
+        foreach ($i->checks() as $c) {
+            self::assertNotSame('canary', $c->id);
+        }
+    }
+
+    public function test_S1_nama_token_acak_antar_instalasi_dan_tidak_di_halaman(): void
+    {
+        $a = $this->installer();
+        $this->token($a);
+        $other = $this->root . '/app2';
+        mkdir($other . '/storage', 0750, true);
+        mkdir($other . '/config', 0750, true);
+        $b = $this->installer($other);
+        $this->token($b);
+        self::assertNotSame(basename($a->tokenPath()), basename($b->tokenPath()));
+        self::assertMatchesRegularExpression('/^install_token_[a-f0-9]{16}$/', basename($a->tokenPath()));
+        [$k] = $this->web();
+        $get = $k->handle(new Request('GET', '/install', headers: ['host' => 'localhost:8080']));
+        self::assertStringNotContainsString(basename($a->tokenPath()), $get->body);
+    }
+
+    /** @return array<string,array{0:string,1:bool}> */
+    public static function guardProvider(): array
+    {
+        $ok = "<IfModule mod_authz_core.c>\n    Require all denied\n</IfModule>\n<IfModule !mod_authz_core.c>\n    Order allow,deny\n    Deny from all\n</IfModule>\n";
+        return [
+            'sah' => [$ok, true],
+            'komentar saja' => ["# Require all denied\n# Deny from all\n", false],
+            'komentar + longgar' => ["# Require all denied Deny from all\nRequire all granted\n", false],
+            'allow from all' => [$ok . "Allow from all\n", false],
+            'require all granted tambahan' => [$ok . "Require all granted\n", false],
+            'satisfy any' => [$ok . "Satisfy any\n", false],
+            'deny di konteks salah' => ["Require all denied\nDeny from all\n", false],
+            'blok tak dikenal' => [$ok . "<Files x>\nRequire all granted\n</Files>\n", false],
+            'ifmodule tak tertutup' => [substr($ok, 0, -12), false],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('guardProvider')]
+    public function test_S1_guardPresent_memeriksa_direktif_efektif(string $htaccess, bool $valid): void
+    {
+        $app = $this->fallbackApp();
+        file_put_contents($app . '/.htaccess', $htaccess);
+        $i = $this->installer($app);
+        $byId = [];
+        foreach ($i->checks() as $c) {
+            $byId[$c->id] = $c;
+        }
+        // checks() menulis ulang penjaga yang tidak sah; berkas sah dibiarkan apa adanya
+        self::assertTrue($byId['guard']->ok);
+        $now = file_get_contents($app . '/.htaccess');
+        $valid ? self::assertSame($htaccess, $now) : self::assertNotSame($htaccess, $now, 'penjaga lemah diganti');
+    }
+
+    public function test_S1_controller_mode_cadangan_menampilkan_uji_kanari_dan_route_laporan(): void
+    {
+        $app = $this->fallbackApp();
+        $i = $this->installer($app);
+        $session = new ArraySessionStore();
+        $csrf = new Csrf($session);
+        $src = __DIR__ . '/../../app/core';
+        $router = new Router();
+        (new InstallController(
+            $i,
+            $csrf,
+            new Template($src . '/Install/views', $this->root . '/cache'),
+            new Template($src . '/Core/views', $this->root . '/cache'),
+            new RateLimiter($this->root . '/rl'),
+        ))->registerRoutes($router);
+        $k = new Kernel($router, [new CsrfMiddleware($router, $csrf, $session)]);
+        $h = ['host' => 'localhost:8080'];
+        $get = $k->handle(new Request('GET', '/install', headers: $h));
+        self::assertSame(200, $get->status);
+        self::assertStringContainsString('canary-box', $get->body);
+        self::assertStringContainsString('/app/storage/canary_', $get->body);
+        self::assertStringContainsString('install-canary.js', $get->body);
+        self::assertStringNotContainsString('name="install_token"', $get->body, 'formulir tersembunyi sebelum terbukti');
+        self::assertSame([], glob($app . '/storage/install_token*') ?: []);
+        $t = (string) $csrf->token();
+        $bad = $k->handle(new Request('POST', '/install/canary', post: ['blocked' => '1']));
+        self::assertSame(419, $bad->status, 'CSRF wajib');
+        $exposed = $k->handle(new Request('POST', '/install/canary', post: ['_csrf' => $t, 'blocked' => '0']));
+        self::assertSame(422, $exposed->status);
+        self::assertSame([], glob($app . '/storage/install_token*') ?: []);
+        $k->handle(new Request('GET', '/install', headers: $h));
+        $ok = $k->handle(new Request('POST', '/install/canary', post: ['_csrf' => $t, 'blocked' => '1']));
+        self::assertSame(200, $ok->status);
+        self::assertCount(1, glob($app . '/storage/install_token_*') ?: []);
+        self::assertSame([], glob($app . '/storage/canary_*') ?: []);
+        $again = $k->handle(new Request('GET', '/install', headers: $h));
+        self::assertStringContainsString('name="install_token"', $again->body);
+        self::assertStringNotContainsString('canary-box', $again->body);
     }
 
     public function test_ARCH_02_mode_normal_app_di_luar_docroot_dan_prasyarat(): void

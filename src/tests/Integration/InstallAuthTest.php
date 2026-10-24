@@ -40,8 +40,10 @@ final class InstallAuthTest extends TestCase
         $form = $b->get('/install');
         self::assertSame(200, $form->status);
         self::assertSame([], $form->securityIssues());
-        $token = trim((string) file_get_contents($root . '/storage/install_token'));
+        $token = KernelApp::tokenOf($root . '/storage');
         self::assertGreaterThanOrEqual(32, strlen($token));
+        self::assertMatchesRegularExpression('#/install_token_[a-f0-9]{16}$#', (glob($root . '/storage/install_token_*') ?: [''])[0], 'nama token acak (S1)');
+        self::assertFalse(is_file($root . '/storage/install_token'), 'nama tetap lama tidak dipakai');
         self::assertFalse(is_file($root . '/config/config.php'));
 
         // Token salah ditolak, tidak ada yang ditulis.
@@ -67,7 +69,8 @@ final class InstallAuthTest extends TestCase
         self::assertIsString($cfg['APP_KEY']);
         self::assertGreaterThanOrEqual(32, strlen($cfg['APP_KEY']));
         self::assertTrue(is_file($root . '/storage/installed.lock'));
-        self::assertFalse(is_file($root . '/storage/install_token'), 'token instal harus dihapus');
+        self::assertSame([], glob($root . '/storage/install_token*') ?: [], 'token instal harus dihapus');
+        self::assertSame([], glob($root . '/storage/canary*') ?: [], 'layout normal: tanpa kanari');
 
         $u = $a->pdo()->query('SELECT email, status, password_hash FROM users')->fetchAll(\PDO::FETCH_ASSOC);
         self::assertCount(1, $u);
@@ -100,7 +103,7 @@ final class InstallAuthTest extends TestCase
         $a = KernelApp::fresh();
         $b = $a->browser();
         $b->get('/install');
-        $ok = $this->installPost($a, trim((string) file_get_contents($a->root . '/app/storage/install_token')));
+        $ok = $this->installPost($a, KernelApp::tokenOf($a->root . '/app/storage'));
         self::assertSame(200, $ok->status);
         if (preg_match('#(/auth/reset/[A-Za-z0-9._-]+)#', $ok->body, $m) !== 1) {
             self::fail('tautan reset tidak ada di halaman instal');
