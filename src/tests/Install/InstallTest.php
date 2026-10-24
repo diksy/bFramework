@@ -718,4 +718,21 @@ final class InstallTest extends TestCase
         }
         self::assertSame([403, 403, 429], $codes);
     }
+
+    public function test_SEC5_S20_kunci_kanari_terpisah_dari_submit_instal(): void
+    {
+        [$k, $session] = $this->web(2);
+        $csrf = (new Csrf($session))->token();
+        $h = ['host' => 'localhost:8080'];
+        for ($n = 0; $n < 5; $n++) {
+            $k->handle(new Request('POST', '/install/canary', post: ['_csrf' => $csrf, 'blocked' => '1'], headers: $h, remoteAddr: '203.0.113.9'));
+        }
+        $codes = [];
+        for ($n = 0; $n < 3; $n++) {
+            $res = $k->handle(new Request('POST', '/install', post: $this->form('salah', $csrf), headers: $h, remoteAddr: '203.0.113.9'));
+            $codes[] = $res->status;
+        }
+        self::assertSame([403, 403, 429], $codes, 'laporan kanari tidak memakan kuota submit');
+        self::assertSame('900', $res->headers['Retry-After'] ?? null);
+    }
 }

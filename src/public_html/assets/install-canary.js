@@ -1,13 +1,14 @@
 // S1: uji akses berkas kanari dari browser pemilik. URL kanari berasal dari server (atribut data), bukan input pengguna.
-// Lulus bila isi kanari TIDAK terbaca (403/404/redirect/halaman lain). Tanpa inline script (CSP nonce).
+// Lulus bila isi kanari TIDAK terbaca (403/404/halaman lain, termasuk setelah redirect). Tanpa inline script (CSP nonce).
 (function () {
   'use strict';
 
   // Keputusan murni (tanpa DOM): resolve true = TERBACA (gagal), false = aman (lulus); reject = galat fetch (tidak melapor).
   function isExposed(fetchFn, url, expected) {
-    return fetchFn(url, { method: 'GET', credentials: 'omit', cache: 'no-store', redirect: 'manual' })
+    return fetchFn(url, { method: 'GET', credentials: 'omit', cache: 'no-store', redirect: 'follow' })
       .then(function (res) {
-        if (res.type === 'opaqueredirect') { return false; }
+        // S21: redirect diikuti; yang dinilai HANYA isi respons akhir (redirect bukan tanda lulus).
+        if (res.type === 'opaqueredirect') { return Promise.reject(new Error('redirect tidak dapat diikuti')); }
         if (res.status === 403 || res.status === 404) { return false; }
         return res.text().then(function (t) { return t.indexOf(expected) !== -1; });
       });

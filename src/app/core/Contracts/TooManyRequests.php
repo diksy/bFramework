@@ -8,8 +8,9 @@ defined('APP_BOOTED') || exit;
 
 final class TooManyRequests extends HttpException
 {
-    public function __construct(string $message = '')
+    /** @param int $retryAfter detik; >0 memasang header Retry-After */
+    public function __construct(string $message = '', int $retryAfter = 0)
     {
-        parent::__construct(429, $message);
+        parent::__construct(429, $message, $retryAfter > 0 ? ['Retry-After' => (string) $retryAfter] : []);
     }
 }

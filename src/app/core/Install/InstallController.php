@@ -60,8 +60,9 @@ final class InstallController
         if ($this->installer->isInstalled()) {
             throw new NotFound();
         }
-        if (!$this->limiter->hit('install:' . $r->remoteAddr, $this->rateMax * 3, $this->rateWindow)) {
-            throw new TooManyRequests();
+        // S20: kunci sendiri; laporan kanari berulang tidak boleh menghabiskan kuota submit instal.
+        if (!$this->limiter->hit('install-canary:' . $r->remoteAddr, $this->rateMax * 3, $this->rateWindow)) {
+            throw new TooManyRequests('', $this->rateWindow);
         }
         $ok = $this->installer->reportCanary(($r->post['blocked'] ?? '') === '1');
         if ($ok) {
@@ -79,7 +80,7 @@ final class InstallController
         }
         if (!$this->limiter->hit('install:' . $r->remoteAddr, $this->rateMax, $this->rateWindow)) {
             $this->logger?->warning('Installer kena rate limit');
-            throw new TooManyRequests();
+            throw new TooManyRequests('', $this->rateWindow);
         }
         $f = [];
         foreach (['app_url', 'admin_email', 'admin_name', 'db_driver', 'db_file', 'db_host', 'db_port', 'db_name', 'db_user',

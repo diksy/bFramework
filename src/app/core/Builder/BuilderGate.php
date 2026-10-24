@@ -109,8 +109,9 @@ final class BuilderGate
             return true;
         }
         $max = max(1, (int) ($this->opts['rateMax'] ?? 5));
-        if (!$this->limiter->hit('builderlogin:' . $r->remoteAddr, $max, max(60, (int) ($this->opts['rateWindow'] ?? 900)))) {
-            throw new TooManyRequests();
+        $win = max(60, (int) ($this->opts['rateWindow'] ?? 900));
+        if (!$this->limiter->hit('builderlogin:' . $r->remoteAddr, $max, $win)) {
+            throw new TooManyRequests('', $win);
         }
         $hash = $this->opts['passwordHash'] ?? '';
         $ok = is_string($hash) && $hash !== '' && $password !== '' && password_verify($password, $hash);

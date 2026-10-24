@@ -8,13 +8,22 @@ const fake = (o) => () => o instanceof Error ? Promise.reject(o)
 const cases = [
   ['403 lulus', { status: 403 }, false],
   ['404 lulus', { status: 404, body: X }, false],
-  ['opaqueredirect lulus', { type: 'opaqueredirect', status: 0 }, false],
+  // S21 (SEC5_S21): redirect diikuti, yang dinilai respons akhir.
+  ['SEC5_S21 redirect ke berkas yang menyajikan nilai gagal', { status: 200, redirected: true, body: X }, true],
+  ['SEC5_S21 redirect ke halaman lain lulus', { status: 200, redirected: true, body: '<html>beranda</html>' }, false],
+  ['SEC5_S21 redirect ke 404 lulus', { status: 404, redirected: true, body: X }, false],
+  ['SEC5_S21 redirect ke 403 lulus', { status: 403, redirected: true }, false],
   ['200 berisi nilai gagal', { status: 200, body: X }, true],
   ['200 HTML lain lulus', { status: 200, body: '<html>instal</html>' }, false],
   ['200 nilai terbungkus gagal', { status: 200, body: 'xx<pre>' + X + '</pre>' + 'y'.repeat(500) }, true],
 ];
 (async () => {
   for (const [n, o, want] of cases) { assert.strictEqual(await isExposed(fake(o), '/x', X), want, n); }
+  // Harus memakai redirect default 'follow', bukan 'manual'.
+  let opt; await isExposed((u, o) => { opt = o; return Promise.resolve({ status: 404, text: () => Promise.resolve('') }); }, '/x', X);
+  assert.strictEqual(opt.redirect, 'follow', 'SEC5_S21 redirect diikuti');
+  // opaqueredirect tidak pernah dianggap lulus otomatis (galat, tidak melapor).
+  await assert.rejects(isExposed(fake({ type: 'opaqueredirect', status: 0 }), '/x', X), 'SEC5_S21 opaqueredirect bukan lulus');
   await assert.rejects(isExposed(fake(new Error('net')), '/x', X), 'fetch error tidak memutuskan');
   console.log('OK');
 })().catch((e) => { console.error(e.message); process.exit(1); });
