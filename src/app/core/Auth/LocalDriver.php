@@ -29,12 +29,13 @@ final class LocalDriver implements AuthDriver
     private const RESET_KEY = '_reset_token';
     private const VERIFY_KEY = '_verify_token';
 
-    /** @var array{appUrl:string,registration:bool,defaultRole:string,resetTtl:int,verifyTtl:int,issuer:string,from:string,fromName:string} */
+    /** @var array{appUrl:string,registration:bool,defaultRole:string,resetTtl:int,verifyTtl:int,issuer:string,from:string,fromName:string,breakGlass:bool,loginPath:string} */
     private array $opts;
 
     /**
      * @param array<string,mixed> $opts appUrl (wajib, https kecuali allowHttp), registration, defaultRole,
-     *     resetTtl/verifyTtl (detik, maks 3600), issuer, from, fromName, allowHttp
+     *     resetTtl/verifyTtl (detik, maks 3600), issuer, from, fromName, allowHttp, breakGlass (SSO-01: mode hybrid, hanya
+     *     akun break_glass lewat loginPath terpisah; rute lain tidak didaftarkan), loginPath
      */
     public function __construct(
         private readonly AuthManager $auth,
@@ -63,6 +64,11 @@ final class LocalDriver implements AuthDriver
         }
         $ttl = static fn(mixed $v): int => is_int($v) && $v >= 60 && $v <= OneTimeToken::MAX_TTL ? $v : 1800;
         $str = static fn(mixed $v, string $d): string => is_string($v) && $v !== '' ? $v : $d;
+        $loginPath = $opts['loginPath'] ?? '/auth/break-glass';
+        if (!is_string($loginPath) || preg_match('#^/[A-Za-z0-9_-]+(/[A-Za-z0-9_-]+){0,3}$#D', $loginPath) !== 1
+            || str_starts_with($loginPath, '/auth/sso') || $loginPath === '/login') {
+            throw new \InvalidArgumentException('loginPath break-glass tidak valid');
+        }
         $this->opts = [
             'appUrl' => $url,
             'registration' => ($opts['registration'] ?? false) === true,
@@ -72,6 +78,8 @@ final class LocalDriver implements AuthDriver
             'issuer' => $str($opts['issuer'] ?? null, 'BikininFramework'),
             'from' => $str($opts['from'] ?? null, 'noreply@example.invalid'),
             'fromName' => $str($opts['fromName'] ?? null, 'BikininFramework'),
+            'breakGlass' => ($opts['breakGlass'] ?? false) === true,
+            'loginPath' => $loginPath,
         ];
     }
 
@@ -83,6 +91,14 @@ final class LocalDriver implements AuthDriver
     public function registerRoutes(Router $router): void
     {
         $h = fn(string $m): \Closure => fn(Request $r, array $p = []): Response => $this->$m($r, $p);
+        if ($this->opts['breakGlass']) {
+            // SSO-01: hanya login darurat, di URL terpisah yang tidak ditautkan dari halaman login mana pun.
+            $router->add('GET', $this->opts['loginPath'], $h('loginForm'));
+            $router->add('POST', $this->opts['loginPath'], $h('loginPost'));
+            $router->add('GET', '/auth/otp', $h('otpForm'));
+            $router->add('POST', '/auth/otp', $h('otpPost'));
+            return;
+        }
         $router->add('GET', '/login', $h('loginForm'));
         $router->add('POST', '/login', $h('loginPost'));
         $router->add('POST', '/logout', $h('logoutPost'));
@@ -121,7 +137,8 @@ final class LocalDriver implements AuthDriver
         $acc = AccountStore::normalizeEmail($email) === null ? null : $this->accounts->findByEmail($email);
         $hash = $acc?->passwordHash ?? $this->hasher->dummyHash();
         $valid = $this->hasher->verify($password, $hash); // selalu satu verifikasi, ada/tidaknya akun
-        if ($acc === null || $acc->passwordHash === null || !$valid || !$acc->isActive()) {
+        if ($acc === null || $acc->passwordHash === null || !$valid || !$acc->isActive()
+            || ($this->opts['breakGlass'] && !$acc->breakGlass)) {
             return AuthResult::fail(self::GENERIC_FAIL);
         }
         if ($this->hasher->needsRehash($acc->passwordHash)) {
@@ -164,7 +181,7 @@ final class LocalDriver implements AuthDriver
         if ($acc === null) {
             return $this->loginPage([self::GENERIC_FAIL], '', 401);
         }
-        $remember = ($r->post['remember'] ?? null) === '1';
+        $remember = !$this->opts['breakGlass'] && ($r->post['remember'] ?? null) === '1'; // login darurat: tanpa ingat-saya
         if ($acc->totpEnabled) {
             if ($this->twofa === null) {
                 $this->logger?->error('Akun memakai 2FA tetapi APP_KEY tidak tersedia; login ditolak');
@@ -542,14 +559,18 @@ final class LocalDriver implements AuthDriver
     /** @param list<string> $errors */
     private function loginPage(array $errors, string $email, int $status): Response
     {
-        return $this->panel('Masuk', $status, [
+        $bg = $this->opts['breakGlass'];
+        $fields = [
+            self::field('email', 'Email', 'email', 'username', $email),
+            self::field('password', 'Password', 'password', 'current-password'),
+        ];
+        if (!$bg) {
+            $fields[] = ['name' => 'remember', 'label' => 'Ingat saya', 'isCheck' => true, 'type' => '', 'value' => '', 'autocomplete' => ''];
+        }
+        return $this->panel($bg ? 'Login darurat' : 'Masuk', $status, [
             'errors' => $errors,
-            'forms' => [['id' => 'l', 'action' => '/login', 'submit' => 'Masuk', 'fields' => [
-                self::field('email', 'Email', 'email', 'username', $email),
-                self::field('password', 'Password', 'password', 'current-password'),
-                ['name' => 'remember', 'label' => 'Ingat saya', 'isCheck' => true, 'type' => '', 'value' => '', 'autocomplete' => ''],
-            ]]],
-            'links' => [['href' => '/auth/forgot', 'label' => 'Lupa password?']],
+            'forms' => [['id' => 'l', 'action' => $bg ? $this->opts['loginPath'] : '/login', 'submit' => 'Masuk', 'fields' => $fields]],
+            'links' => $bg ? [] : [['href' => '/auth/forgot', 'label' => 'Lupa password?']],
         ]);
     }
 

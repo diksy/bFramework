@@ -2,3 +2,8 @@ parameters:
     level: 8
     paths:
         - src/app
+    excludePaths:
+        analyse:
+            - src/app/core/vendor
+    scanDirectories:
+        - src/app/core/vendor

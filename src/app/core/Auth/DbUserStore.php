@@ -24,7 +24,7 @@ use InvalidArgumentException;
 final class DbUserStore implements UserStore
 {
     private const COLS = ['id', 'email', 'name', 'status', 'email_verified_at', 'totp_enabled', 'sso_sub', 'break_glass', 'created_at'];
-    private const UPDATABLE = ['name', 'email', 'status', 'sso_sub'];
+    private const UPDATABLE = ['name', 'email', 'status', 'sso_sub', 'break_glass'];
     private const STATUSES = ['active', 'pending', 'disabled'];
 
     private readonly Query $q;
@@ -110,6 +110,12 @@ final class DbUserStore implements UserStore
         if (array_key_exists('sso_sub', $set) && $set['sso_sub'] !== null
             && (!is_string($set['sso_sub']) || $set['sso_sub'] === '' || strlen($set['sso_sub']) > 255)) {
             throw new InvalidArgumentException('sso_sub tidak valid');
+        }
+        if (array_key_exists('break_glass', $set)) {
+            if (!is_bool($set['break_glass'])) {
+                throw new InvalidArgumentException('break_glass harus boolean');
+            }
+            $set['break_glass'] = $set['break_glass'] ? 1 : 0; // SSO-01: tanda akun login darurat (mode hybrid)
         }
         $deactivate = false;
         if (array_key_exists('status', $set)) {

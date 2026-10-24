@@ -23,6 +23,7 @@ interface UserStore
      *
      * @param array<string,mixed> $values
      * @throws RuleViolation menonaktifkan admin aktif terakhir
+     * @throws \InvalidArgumentException nilai tidak sah atau email/sso_sub sudah dipakai
      */
     public function update(int $id, array $values): void;
 

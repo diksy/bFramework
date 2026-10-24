@@ -35,6 +35,7 @@ final class BuilderController
      * @param Closure(string):?array<string,mixed> $activeModel model ter-compile aktif (null bila belum ada)
      * @param Closure():list<string> $roles nama peran yang ada
      * @param Closure(Identity):list<array<string,mixed>> $nav menu samping
+     * @param (Closure(string):array{ok:bool,steps:list<array{name:string,ok:bool,msg:string}>})|null $ssoTest SSO-21 (disuntik bootstrap; Builder tidak bergantung ke Sso)
      */
     public function __construct(
         private readonly BuilderGate $gate,
@@ -49,6 +50,7 @@ final class BuilderController
         private readonly Closure $roles,
         private readonly Closure $nav,
         private readonly ?Logger $logger = null,
+        private readonly ?Closure $ssoTest = null,
     ) {
     }
 
@@ -66,6 +68,7 @@ final class BuilderController
         $router->add('GET', '/_builder/api/sample', fn(Request $r, array $p = []): Response => $this->api($r, fn(Identity $w): Response => $this->sample($r)));
         $router->add('POST', '/_builder/api/migration', fn(Request $r, array $p = []): Response => $this->api($r, fn(Identity $w): Response => $this->migration($r)));
         $router->add('POST', '/_builder/api/save', fn(Request $r, array $p = []): Response => $this->api($r, fn(Identity $w): Response => $this->save($r, $w)));
+        $router->add('POST', '/_builder/api/sso-test', fn(Request $r, array $p = []): Response => $this->api($r, fn(Identity $w): Response => $this->ssoTest($r)));
         $router->add('POST', '/_builder/api/delete', fn(Request $r, array $p = []): Response => $this->api($r, fn(Identity $w): Response => $this->delete($r, $w)));
     }
 
@@ -235,6 +238,21 @@ final class BuilderController
             return $this->json(['error' => 'Model tidak ditemukan.'], 404);
         }
         return $this->json(Sampler::seed($model, 8, true));
+    }
+
+    /** SSO-21: tes discovery + JWKS untuk issuer yang sedang diisi. Tanpa rahasia; SSRF ditangani HttpClient. */
+    private function ssoTest(Request $r): Response
+    {
+        $issuer = $r->json()['issuer'] ?? null;
+        if ($this->ssoTest === null || !is_string($issuer) || strlen($issuer) > 255) {
+            return $this->json(['error' => 'Permintaan tidak valid.'], 422);
+        }
+        try {
+            return $this->json(($this->ssoTest)($issuer));
+        } catch (Throwable) {
+            $this->logger?->warning('Tes koneksi SSO gagal tak terduga');
+            return $this->json(['ok' => false, 'steps' => [['name' => 'tes', 'ok' => false, 'msg' => 'Tes gagal dijalankan.']]]);
+        }
     }
 
     /** @return array{0:string,1:string,2:array<mixed>,3:string,4:bool}|Response [kind,name,data,baseHash,confirm] */

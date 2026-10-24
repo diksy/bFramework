@@ -22,6 +22,9 @@ final class AuthManager
 {
     private const AUTH_AT = '_auth_at';
 
+    /** @var (\Closure(Identity):bool)|null guard sesi tambahan dari driver (SSO-01/17): false = sesi tidak sah */
+    private ?\Closure $guard = null;
+
     public function __construct(
         private readonly SessionStore $session,
         private readonly CurrentIdentity $identity,
@@ -32,10 +35,22 @@ final class AuthManager
     }
 
     /**
+     * Pasang guard sesi (dipanggil sekali saat perakitan). Guard dievaluasi saat login() dan tiap current():
+     * mode SSO memakainya untuk menolak sesi lokal biasa (SSO-01) dan sesi yang dicabut back-channel (SSO-17).
+     *
+     * @param \Closure(Identity):bool $guard
+     */
+    public function useGuard(\Closure $guard): void
+    {
+        $this->guard = $guard;
+    }
+
+    /**
      * @param list<string> $amr
      * @throws NoRoles bila akun belum punya peran
+     * @throws InvalidArgumentException bila akun tidak aktif atau guard driver menolak
      */
-    public function login(int $userId, array $amr): Identity
+    public function login(int $userId, array $amr, ?string $ssoSid = null): Identity
     {
         $account = $this->accounts->find($userId);
         if ($account === null || !$account->isActive()) {
@@ -45,11 +60,14 @@ final class AuthManager
         if ($roles === []) {
             throw new NoRoles('Akun belum memiliki peran');
         }
+        $amr = array_values(array_unique(array_filter($amr, static fn($a): bool => preg_match('/^[a-z]{2,16}$/D', $a) === 1)));
+        $id = new Identity($userId, $roles, $roles[0], $amr, $ssoSid);
+        if ($this->guard !== null && !($this->guard)($id)) {
+            throw new InvalidArgumentException('Akun tidak dapat login');
+        }
         $this->session->start();
         $this->session->regenerate();
         $this->csrf->rotate();
-        $amr = array_values(array_unique(array_filter($amr, static fn($a): bool => preg_match('/^[a-z]{2,16}$/D', $a) === 1)));
-        $id = new Identity($userId, $roles, $roles[0], $amr, null);
         $this->identity->set($id);
         $this->session->set(self::AUTH_AT, $this->clock->now()->getTimestamp());
         return $id;
@@ -69,6 +87,10 @@ final class AuthManager
         }
         $roles = $this->accounts->roles($id->userId);
         if ($roles === []) {
+            $this->logout();
+            return null;
+        }
+        if ($this->guard !== null && !($this->guard)($id)) {
             $this->logout();
             return null;
         }
