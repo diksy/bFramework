@@ -85,6 +85,68 @@ function buildUploads(
 }
 
 /**
+ * Perakitan builder (M14, SEC-BLD-01). Rute hanya terdaftar bila BuilderGate::enabled() (dev, atau produksi dengan
+ * `builder.unsafeBuilderInProduction` + `builder.allowedIps` + hash kata sandi builder). Konfigurasi `builder`:
+ * unsafeBuilderInProduction (bool), allowedIps (list), passwordHash (password_hash; env BUILDER_PASSWORD_HASH
+ * menimpa), loginTtl, rateMax, rateWindow. Dev/produksi ditentukan SATU sumber: Config::devMode().
+ */
+function buildBuilder(
+    string $appDir,
+    Runtime\Connection $conn,
+    Runtime\Definitions $defs,
+    Contracts\SessionStore $session,
+    Core\Csrf $csrf,
+    ?Contracts\Logger $logger = null,
+): Builder\BuilderController {
+    $cfg = Core\Config::get('builder', []);
+    $cfg = is_array($cfg) ? $cfg : [];
+    $envHash = getenv('BUILDER_PASSWORD_HASH');
+    if ($envHash !== false && $envHash !== '') {
+        $cfg['passwordHash'] = $envHash;
+    }
+    $clock = new Auth\SystemClock();
+    $identity = new Runtime\CurrentIdentity($session);
+    $gate = new Builder\BuilderGate(
+        Core\Config::devMode(),
+        $cfg,
+        $session,
+        static fn(): ?Contracts\Identity => $identity->get(),
+        new Core\RateLimiter($appDir . '/storage/ratelimit', $clock),
+        $clock,
+        $logger,
+    );
+    $compiler = new Runtime\Compiler(new Runtime\CacheStore($appDir . '/storage/cache'), $appDir . '/extensions');
+    $writer = new Builder\DefinitionWriter($appDir . '/definitions', $compiler, $conn->dialect(), $appDir . '/extensions', $logger);
+    $roles = new Auth\RoleStore($conn);
+    return new Builder\BuilderController(
+        $gate,
+        $writer,
+        new Builder\HookScanner($appDir . '/extensions'),
+        new Builder\AuditLog($conn, $clock, $logger),
+        $conn,
+        $csrf,
+        new Core\Template($appDir . '/core/Builder/views', $appDir . '/storage/cache/views'),
+        new Core\Template($appDir . '/core/Core/views', $appDir . '/storage/cache/views'),
+        static function (string $n) use ($appDir): ?array {
+            try {
+                return (new Runtime\Definitions(new Runtime\CacheStore($appDir . '/storage/cache')))->model($n); // segar tiap panggilan
+            } catch (\Throwable) {
+                return null; // cache belum dibangun
+            }
+        },
+        static fn(): array => $roles->names(),
+        static function (Contracts\Identity $who) use ($defs): array {
+            try {
+                return Runtime\Navigation::build($defs->pages(), $who);
+            } catch (\Throwable) {
+                return [];
+            }
+        },
+        $logger,
+    );
+}
+
+/**
  * Koneksi database dari config (DB_DRIVER sqlite|mysql). Kata sandi dari config/env, tidak pernah dicatat.
  */
 function connectDatabase(string $appDir): Runtime\Connection
