@@ -25,6 +25,45 @@ $errors = ErrorHandler::register(
     new Template($app . '/core/Core/views', $app . '/storage/cache/views'),
 );
 
+// Installer (M13). Belum terpasang (tanpa installed.lock dan tanpa APP_URL): HANYA /install yang dilayani
+// (rute lain dialihkan/503) dan hanya dengan install_token pemilik. Sudah terpasang: /install = 404.
+$httpsEnv = $_SERVER['HTTPS'] ?? '';
+$https = is_string($httpsEnv) && $httpsEnv !== '' && strtolower($httpsEnv) !== 'off';
+$installer = new bFramework\Install\Installer($app, __DIR__, new bFramework\Auth\SystemClock(), $logger);
+$appUrl = Config::get('APP_URL', '');
+$configured = is_string($appUrl) && $appUrl !== '';
+if (!$installer->isInstalled() && !$configured) {
+    $clock = new bFramework\Auth\SystemClock();
+    $jar = new bFramework\Auth\CookieJar();
+    $session = new bFramework\Core\FileSessionStore($app . '/storage/sessions', $https, 1800, 28800, null, $jar->add(...), $clock);
+    $csrf = new bFramework\Core\Csrf($session);
+    $router = new Router();
+    (new bFramework\Install\InstallController(
+        $installer,
+        $csrf,
+        new Template($app . '/core/Install/views', $app . '/storage/cache/views'),
+        new Template($app . '/core/Core/views', $app . '/storage/cache/views'),
+        new bFramework\Core\RateLimiter($app . '/storage/ratelimit'),
+        $logger,
+    ))->registerRoutes($router);
+    $middleware = [
+        new bFramework\Core\SecurityHeaders(bFramework\Core\Nonce::current(...)),
+        new bFramework\Install\InstallGate(),
+        new bFramework\Auth\SessionMiddleware($session, $jar, $session->gc(...)),
+        new bFramework\Core\CsrfMiddleware($router, $csrf, $session),
+    ];
+    $auth = null;
+    $response = (new Kernel($router, $middleware, $logger, $errors->page(...)))->handleGlobals();
+    $response->send();
+    return;
+}
+if (!$configured) {
+    // Terpasang tetapi APP_URL hilang: fail-closed (jangan layani tanpa HostGuard).
+    http_response_code(503);
+    echo 'Konfigurasi tidak lengkap.';
+    return;
+}
+
 // Rute dari hasil compile (lazy: hanya dibaca bila versi aktif ada).
 $router = new Router();
 $current = @file_get_contents($app . '/storage/cache/current');
@@ -39,36 +78,23 @@ if (is_string($current) && preg_match('/^v_[a-f0-9]{6,32}$/', trim($current)) ==
 }
 
 // Perakitan autentikasi (M10) + runtime halaman (M9). HTTPS ditentukan dari SAPI saja (header proxy tidak dipercaya).
-// Belum terpasang (APP_URL kosong; installer M13 yang mengisinya): hanya rute compile + header keamanan, tanpa login.
-$hosts = Config::get('ALLOWED_HOSTS', []);
-$hosts = is_array($hosts) ? array_values(array_filter($hosts, 'is_string')) : [];
-$appUrl = Config::get('APP_URL', '');
-if (is_string($appUrl) && $appUrl !== '') {
-    $httpsEnv = $_SERVER['HTTPS'] ?? '';
-    $https = is_string($httpsEnv) && $httpsEnv !== '' && strtolower($httpsEnv) !== 'off';
-    $conn = bFramework\connectDatabase($app);
-    $auth = bFramework\buildAuth($app, $conn, $https, $logger);
-    $defs = new bFramework\Runtime\Definitions(new bFramework\Runtime\CacheStore($app . '/storage/cache'));
-    [$uploads, $fileCtl] = bFramework\buildUploads($app, $conn, $defs, new bFramework\Runtime\CurrentIdentity($auth->session), $logger);
-    bFramework\configureRuntime($app, $conn, $auth->session, $logger, $uploads);
-    $fileCtl->registerRoutes($router);
-    if (random_int(1, 200) === 1) {
-        $auth->deferred->push(static function () use ($uploads): void {
-            $uploads->purgeOrphans(86400); // upload yang tak pernah di-submit (setelah respons dikirim)
-        });
-    }
-    $auth->driver->registerRoutes($router);
-    $auth->admin?->registerRoutes($router);
-    $middleware = $auth->middleware($router, $hosts, Config::devMode());
-} else {
-    $auth = null;
-    $middleware = [new bFramework\Core\SecurityHeaders(bFramework\Core\Nonce::current(...))];
+// ALLOWED_HOSTS kosong -> host dari APP_URL; HostGuard selalu dipasang (SEC-REQ-03, fail-closed).
+$hosts = bFramework\Install\HostPolicy::allowed(Config::get('ALLOWED_HOSTS', []), $appUrl);
+$conn = bFramework\connectDatabase($app);
+$auth = bFramework\buildAuth($app, $conn, $https, $logger);
+$defs = new bFramework\Runtime\Definitions(new bFramework\Runtime\CacheStore($app . '/storage/cache'));
+[$uploads, $fileCtl] = bFramework\buildUploads($app, $conn, $defs, new bFramework\Runtime\CurrentIdentity($auth->session), $logger);
+bFramework\configureRuntime($app, $conn, $auth->session, $logger, $uploads);
+$fileCtl->registerRoutes($router);
+if (random_int(1, 200) === 1) {
+    $auth->deferred->push(static function () use ($uploads): void {
+        $uploads->purgeOrphans(86400); // upload yang tak pernah di-submit (setelah respons dikirim)
+    });
 }
+$auth->driver->registerRoutes($router);
+$auth->admin?->registerRoutes($router);
+$middleware = $auth->middleware($router, $hosts, false);
 
 $response = (new Kernel($router, $middleware, $logger, $errors->page(...)))->handleGlobals();
 // Respons dikirim dan koneksi ditutup sebelum pekerjaan tunda (email) dijalankan.
-if ($auth !== null) {
-    $auth->deferred->respondThenRun($response);
-} else {
-    $response->send();
-}
+$auth->deferred->respondThenRun($response);
