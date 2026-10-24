@@ -7,6 +7,8 @@ use bFramework\Core\ErrorHandler;
 use bFramework\Core\Kernel;
 use bFramework\Core\RotatingFileLogger;
 use bFramework\Core\Router;
+use bFramework\Core\SecurityHeaders;
+use bFramework\Core\TransportPolicy;
 use bFramework\Core\Template;
 
 // Satu-satunya pintu masuk; app/ berada di luar docroot (ARCH-01).
@@ -18,7 +20,12 @@ Config::load($app . '/config/config.php');
 
 // Log di app/storage/logs (di luar docroot), rotasi 5 MB x 5 berkas (SEC-LOG-01).
 $production = !Config::devMode();
-$logger = new RotatingFileLogger($app . '/storage/logs', 5 * 1024 * 1024, 5);
+// Log umum dibatasi lajunya (S8a); audit admin di kanal terpisah (audit.log, kuota sendiri) agar tak terbilas banjir log anonim.
+$logger = new RotatingFileLogger($app . '/storage/logs', 5 * 1024 * 1024, 5, 'app.log', 30);
+$auditLogger = new RotatingFileLogger($app . '/storage/logs', 5 * 1024 * 1024, 10, 'audit.log', null, false);
+// S9: APP_URL https memaksa cookie Secure/__Host- + HSTS; X-Forwarded-Proto hanya dari TRUSTED_PROXIES (default kosong).
+$appUrl = Config::get('APP_URL', '');
+TransportPolicy::configure(is_string($appUrl) ? $appUrl : '', Config::get('TRUSTED_PROXIES', []));
 $errors = ErrorHandler::register(
     $production,
     $logger,
@@ -27,19 +34,18 @@ $errors = ErrorHandler::register(
 
 // Installer (M13). Belum terpasang (tanpa installed.lock dan tanpa APP_URL): HANYA /install yang dilayani
 // (rute lain dialihkan/503) dan hanya dengan install_token pemilik. Sudah terpasang: /install = 404.
-$httpsEnv = $_SERVER['HTTPS'] ?? '';
-$https = is_string($httpsEnv) && $httpsEnv !== '' && strtolower($httpsEnv) !== 'off';
+$https = TransportPolicy::isHttps($_SERVER);
 // Mode pemeliharaan singkat selama update diterapkan (M17); kedaluwarsa 10 menit agar kegagalan proses tidak mengunci selamanya.
 $maint = $app . '/storage/maintenance';
 if (is_file($maint) && time() - (int) @filemtime($maint) < 600) {
     http_response_code(503);
+    SecurityHeaders::sendRaw($https);
     header('Retry-After: 60');
     header('Cache-Control: no-store');
     echo 'Sedang dalam pemeliharaan. Coba lagi sebentar.';
     return;
 }
 $installer = new bFramework\Install\Installer($app, __DIR__, new bFramework\Auth\SystemClock(), $logger);
-$appUrl = Config::get('APP_URL', '');
 $configured = is_string($appUrl) && $appUrl !== '';
 if (!$installer->isInstalled() && !$configured) {
     $clock = new bFramework\Auth\SystemClock();
@@ -69,6 +75,7 @@ if (!$installer->isInstalled() && !$configured) {
 if (!$configured) {
     // Terpasang tetapi APP_URL hilang: fail-closed (jangan layani tanpa HostGuard).
     http_response_code(503);
+    SecurityHeaders::sendRaw($https);
     echo 'Konfigurasi tidak lengkap.';
     return;
 }
@@ -93,7 +100,7 @@ if (is_string($current) && preg_match('/^v_[a-f0-9]{6,32}$/', trim($current)) ==
 // Perakitan autentikasi (M10) + runtime halaman (M9). HTTPS ditentukan dari SAPI saja (header proxy tidak dipercaya).
 // ALLOWED_HOSTS kosong -> host dari APP_URL; HostGuard selalu dipasang (SEC-REQ-03, fail-closed).
 $hosts = bFramework\Install\HostPolicy::allowed(Config::get('ALLOWED_HOSTS', []), $appUrl);
-$auth = bFramework\buildAuth($app, $conn, $https, $logger);
+$auth = bFramework\buildAuth($app, $conn, $https, $logger, $auditLogger);
 $defs = new bFramework\Runtime\Definitions(new bFramework\Runtime\CacheStore($app . '/storage/cache'));
 [$uploads, $fileCtl] = bFramework\buildUploads($app, $conn, $defs, new bFramework\Runtime\CurrentIdentity($auth->session), $logger);
 $pageCache = bFramework\buildPageCache($app, __DIR__, $defs, $logger);

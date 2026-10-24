@@ -9,6 +9,7 @@ return [
     'APP_ENV' => 'production',
     'APP_URL' => 'https://contoh.example',
     'ALLOWED_HOSTS' => ['contoh.example'],
+    'TRUSTED_PROXIES' => [], // IP/CIDR proxy yang boleh memberi X-Forwarded-Proto (default kosong: tidak dipercaya)
     'DB_DRIVER' => 'sqlite',
     'DB_FILE' => 'app.sqlite',
     'MAIL_FROM' => 'noreply@contoh.example',

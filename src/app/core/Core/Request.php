@@ -36,7 +36,7 @@ final readonly class Request
     }
 
     /**
-     * Header proxy (X-Forwarded-*) sengaja tidak dipercaya: isHttps dan remoteAddr hanya dari SAPI.
+     * Header proxy (X-Forwarded-*) tidak dipercaya kecuali dari TRUSTED_PROXIES (TransportPolicy, S9); remoteAddr hanya dari SAPI.
      *
      * @param array<string,mixed> $server
      * @param array<string,mixed> $get
@@ -68,8 +68,7 @@ final readonly class Request
             }
         }
 
-        $https = $server['HTTPS'] ?? '';
-        $isHttps = is_string($https) && $https !== '' && strtolower($https) !== 'off';
+        $isHttps = TransportPolicy::isHttps($server);
         $addr = $server['REMOTE_ADDR'] ?? '';
         $method = is_string($server['REQUEST_METHOD'] ?? null) ? strtoupper($server['REQUEST_METHOD']) : 'GET';
 
