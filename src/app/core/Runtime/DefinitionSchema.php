@@ -19,8 +19,16 @@ final class DefinitionSchema
     public const PAGE_RE = '/^[a-z][a-z0-9_-]{0,40}$/D';
     public const ROUTE_RE = '#^/[a-z0-9_-]+(/[a-z0-9_-]+)*$#D';
     public const ROLE_RE = '/^[A-Za-z][A-Za-z0-9_-]{0,40}$/D';
-    public const RESERVED_MODELS = ['users', 'roles', 'user_roles', 'remember_tokens', 'one_time_tokens', 'sso_sessions', 'migrations'];
-    public const RESERVED_ROUTES = ['admin', '_builder', 'auth', 'login', 'logout', 'install', 'peran-aktif', 'assets', 'files', '_pc'];
+    public const RESERVED_MODELS = [
+        'users', 'roles', 'user_roles', 'remember_tokens', 'one_time_tokens', 'files',
+        'sso_sessions', 'sso_refresh_tokens', 'audit_log', 'migrations',
+    ];
+    /** Awalan nama model yang dicadangkan untuk tabel core masa depan. */
+    public const RESERVED_MODEL_PREFIX = 'bf_';
+    public const RESERVED_ROUTES = [
+        'admin', '_builder', 'auth', 'login', 'logout', 'install', 'peran-aktif',
+        'assets', 'files', 'uploads', 'api', '_pc',
+    ];
     public const HOOK_EVENTS = [
         'beforeSave', 'afterSave', 'beforeCreate', 'afterCreate',
         'beforeUpdate', 'afterUpdate', 'beforeDelete', 'afterDelete',
@@ -70,7 +78,8 @@ final class DefinitionSchema
         if (($d['model'] ?? null) !== $name) {
             $this->error($src . '#/model', 'Nilai "model" harus sama dengan nama file');
         }
-        if (preg_match(self::NAME_RE, $name) !== 1 || in_array($name, self::RESERVED_MODELS, true)) {
+        if (preg_match(self::NAME_RE, $name) !== 1 || in_array($name, self::RESERVED_MODELS, true)
+            || str_starts_with($name, self::RESERVED_MODEL_PREFIX)) {
             $this->error($src, 'Nama model tidak valid atau dicadangkan');
         }
         $fieldsIn = $d['fields'] ?? [];
@@ -394,7 +403,8 @@ final class DefinitionSchema
         if (!is_string($route) || preg_match(self::ROUTE_RE, $route) !== 1) {
             $this->error($src . '#/route', 'Rute harus diawali "/" dengan huruf kecil/angka/-/_');
             $route = '';
-        } elseif (in_array(explode('/', $route)[1], self::RESERVED_ROUTES, true)) {
+        } elseif (in_array(explode('/', $route)[1], self::RESERVED_ROUTES, true)
+            || str_starts_with(explode('/', $route)[1], '_')) {
             $this->error($src . '#/route', 'Awalan rute dicadangkan');
         }
         $out = ['page' => $name, 'route' => $route];
@@ -676,6 +686,10 @@ final class DefinitionSchema
             // Rahasia tidak pernah boleh ada di definisi/cache (CACHE-11); client_secret hanya di config.php.
             $this->unknownKeys($sso, ['issuer', 'client_id', 'provisioning', 'default_role', 'offline_access', 'session_check_minutes'], $src . '#/sso');
             $issuer = $sso['issuer'] ?? '';
+            if (!is_string($issuer) && $driver === 'local') {
+                $this->error($src . '#/sso/issuer', 'Issuer harus string');
+                $issuer = '';
+            }
             if ($driver !== 'local' && (!is_string($issuer) || preg_match('#^https://[a-z0-9.-]+(:\d+)?$#Di', $issuer) !== 1)) {
                 $this->error($src . '#/sso/issuer', 'Issuer harus URL https tanpa path');
             }
@@ -724,6 +738,11 @@ final class DefinitionSchema
 
     private function hasSql(string $v): bool
     {
-        return preg_match('/;|--|\/\*|\b(select|insert|update|delete|drop|union|alter|truncate|exec)\b\s/i', $v . ' ') === 1;
+        // Pola struktur SQL (bukan sekadar kata): label wajar seperti "Update stok" tetap sah.
+        return preg_match(
+            '/;|--|\/\*|\bselect\b.+\bfrom\b|\binsert\s+into\b|\bdelete\s+from\b|\bdrop\s+(table|database|view|index)\b'
+            . '|\bunion\s+(all\s+)?select\b|\balter\s+table\b|\btruncate\s+table\b|\bupdate\s+\S+\s+set\b|\bexec(ute)?\s*\(/is',
+            $v
+        ) === 1;
     }
 }
