@@ -1,0 +1,64 @@
+{
+  "page": "daftar-produk",
+  "route": "/produk",
+  "title": "Produk",
+  "icon": "📦",
+  "group": "Penjualan",
+  "order": 10,
+  "access": [
+    "admin",
+    "staf",
+    "kasir"
+  ],
+  "layout": [
+    {
+      "component": "stat",
+      "span": 4,
+      "agg": "count",
+      "label": "Jumlah produk",
+      "source": {
+        "model": "produk"
+      }
+    },
+    {
+      "component": "stat",
+      "span": 4,
+      "agg": "sum",
+      "field": "stok",
+      "label": "Total stok",
+      "source": {
+        "model": "produk"
+      }
+    },
+    {
+      "component": "stat",
+      "span": 4,
+      "agg": "avg",
+      "field": "harga",
+      "label": "Rata-rata harga",
+      "source": {
+        "model": "produk"
+      }
+    },
+    {
+      "component": "table",
+      "span": 12,
+      "actions": [
+        "edit",
+        "hapus"
+      ],
+      "columns": [
+        "nama",
+        "kategori",
+        "harga",
+        "stok",
+        "aktif"
+      ],
+      "source": {
+        "model": "produk",
+        "sort": "-stok",
+        "perPage": 5
+      }
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "model": "kategori",
+  "fields": {
+    "nama": {
+      "type": "string",
+      "label": "Nama kategori",
+      "required": true,
+      "max": 60
+    }
+  },
+  "access": {
+    "read": "*",
+    "write": [
+      "admin"
+    ]
+  }
+}
