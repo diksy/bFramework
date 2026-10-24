@@ -19,6 +19,7 @@ function configureRuntime(
     Runtime\Connection $conn,
     Contracts\SessionStore $session,
     ?Contracts\Logger $logger = null,
+    ?Runtime\FileRefs $files = null,
 ): void {
     $defs = new Runtime\Definitions(new Runtime\CacheStore($appDir . '/storage/cache'));
     Runtime\PageController::configure(
@@ -33,7 +34,54 @@ function configureRuntime(
         new Core\Csrf($session),
         Core\Config::devMode(),
         $logger,
+        $files,
     );
+}
+
+/**
+ * Perakitan upload (M12b): UploadService (Query khusus tabel `files`) + FileController. Satu-satunya tempat
+ * Runtime dan Upload bertemu (ARCH-03). Direktori default app/storage/uploads (di luar docroot); `docroot`
+ * diisi bila public_html bersebelahan dengan app/ (mode cadangan: tanpa pengecekan ini, andalkan deny-all).
+ * Opsi config `upload`: dir, maxFilesPerOwner, maxBytesPerOwner, rateMax, rateWindow.
+ *
+ * @return array{0:Upload\UploadService,1:Upload\FileController}
+ */
+function buildUploads(
+    string $appDir,
+    Runtime\Connection $conn,
+    Runtime\Definitions $defs,
+    Runtime\CurrentIdentity $identity,
+    ?Contracts\Logger $logger = null,
+): array {
+    $cfg = Core\Config::get('upload', []);
+    $cfg = is_array($cfg) ? $cfg : [];
+    $dir = is_string($cfg['dir'] ?? null) && $cfg['dir'] !== '' ? $cfg['dir'] : $appDir . '/storage/uploads';
+    $docroot = realpath($appDir . '/../public_html');
+    $opts = [];
+    foreach (['maxFilesPerOwner', 'maxBytesPerOwner', 'rateMax', 'rateWindow'] as $k) {
+        if (isset($cfg[$k])) {
+            $opts[$k] = $cfg[$k];
+        }
+    }
+    $g = $conn->grammar();
+    $service = new Upload\UploadService(
+        new Runtime\Query($conn, $g, Upload\FilesTable::allowlist(), $logger),
+        $dir,
+        $opts,
+        $docroot === false ? null : $docroot,
+        new Core\RateLimiter($appDir . '/storage/ratelimit'),
+        $logger,
+    );
+    $controller = new Upload\FileController(
+        $service,
+        $identity,
+        new Runtime\Authorizer(),
+        static fn(string $m): ?array => $defs->model($m),
+        new Runtime\Query($conn, $g, $defs->allowlist(), $logger),
+        ['admin'],
+        $logger,
+    );
+    return [$service, $controller];
 }
 
 /**

@@ -124,6 +124,14 @@ final class Validator
                 }
                 return $s;
             default: // string, text
+                if (is_array($f['upload'] ?? null)) {
+                    // Field file: hanya fid (32 hex). Kepemilikan/policy diperiksa ModelRepository (pesan generik, tanpa oracle).
+                    if (preg_match('/^[a-f0-9]{32}$/D', $s) !== 1) {
+                        $err("$label tidak valid.");
+                        return null;
+                    }
+                    return $s;
+                }
                 if (preg_match('//u', $s) !== 1 || ($type === 'string' && preg_match('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', $s) === 1)) {
                     $err("$label mengandung karakter tidak valid.");
                     return null;

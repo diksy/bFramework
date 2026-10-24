@@ -46,6 +46,53 @@ final class FileController
     public function registerRoutes(Router $router): void
     {
         $router->add('GET', '/files/{id}', fn(Request $q, array $p = []): Response => $this->serve(is_string($p['id'] ?? null) ? $p['id'] : ''), new RouteOpts(csrf: false));
+        // CSRF aktif (default RouteOpts): token `_csrf` dari form; gagal = 419 oleh middleware.
+        $router->add('POST', '/files', fn(Request $q, array $p = []): Response => $this->upload($q));
+    }
+
+    /**
+     * Langkah 1 alur dua langkah: unggah berkas ke field file sebuah model. Policy HANYA dari definisi ter-compile.
+     * Anonim 403; tanpa hak Create/Update model 403; model/field bukan field file 404.
+     */
+    public function upload(Request $q): Response
+    {
+        $who = $this->identity->get();
+        if ($who === null) {
+            return self::json(['error' => 'Akses ditolak'], 403);
+        }
+        $model = $q->post['model'] ?? null;
+        $field = $q->post['field'] ?? null;
+        $def = is_string($model) && preg_match('/^[a-z][a-z0-9_]{0,63}$/D', $model) === 1 ? ($this->models)($model) : null;
+        if ($def === null) {
+            return self::json(['error' => 'Tidak ditemukan'], 404);
+        }
+        if (!$this->authz->can($def, Action::Create, $who) && !$this->authz->can($def, Action::Update, $who)) {
+            return self::json(['error' => 'Akses ditolak'], 403);
+        }
+        $f = is_string($field) && is_array($def['fields'] ?? null) ? ($def['fields'][$field] ?? null) : null;
+        $up = is_array($f) && is_array($f['upload'] ?? null) && ($f['guarded'] ?? false) !== true ? $f['upload'] : null;
+        if ($up === null) {
+            return self::json(['error' => 'Tidak ditemukan'], 404);
+        }
+        try {
+            $policy = new UploadPolicy(array_values(array_map('strval', (array) ($up['mimes'] ?? []))), is_int($up['maxBytes'] ?? null) ? $up['maxBytes'] : 0);
+        } catch (\InvalidArgumentException) {
+            $this->logger?->error('upload: policy definisi tidak valid', ['model' => $model]);
+            return self::json(['error' => 'Konfigurasi upload tidak valid'], 500);
+        }
+        try {
+            $file = UploadedFile::fromFiles($q->files, 'file');
+            $stored = $this->uploads->store($file, $policy, $who->userId);
+        } catch (UploadRejected $e) {
+            return self::json(['error' => $e->getMessage(), 'code' => $e->reason], $e->getCode());
+        }
+        return self::json(['id' => $stored->id, 'mime' => $stored->mime, 'size' => $stored->size, 'name' => UploadService::cleanName($file->name)], 201);
+    }
+
+    /** @param array<string,mixed> $data */
+    private static function json(array $data, int $status): Response
+    {
+        return Response::json($data, $status)->withHeader('Cache-Control', 'no-store')->withHeader('X-Content-Type-Options', 'nosniff');
     }
 
     public function serve(string $id): Response
@@ -56,21 +103,20 @@ final class FileController
             return self::notFound();
         }
         $path = $this->uploads->path($id);
-        $body = is_file($path) ? file_get_contents($path) : false;
-        if ($body === false) {
+        $len = is_file($path) ? @filesize($path) : false;
+        if ($len === false) {
             $this->logger?->error('upload: berkas hilang di storage', ['fid' => $id]);
             return self::notFound();
         }
         $mime = (string) $meta['mime'];
         $inline = in_array($mime, self::INLINE, true);
         $disp = $inline ? 'inline' : 'attachment; filename="' . self::downloadName((string) ($meta['orig_name'] ?? ''), $mime) . '"';
-        return Response::html($body)
-            ->withHeader('Content-Type', $mime)
+        return Response::file($path, $mime)
             ->withHeader('X-Content-Type-Options', 'nosniff')
             ->withHeader('Content-Disposition', $disp)
             ->withHeader('Content-Security-Policy', "default-src 'none'; sandbox")
             ->withHeader('Cache-Control', 'private, no-store')
-            ->withHeader('Content-Length', (string) strlen($body));
+            ->withHeader('Content-Length', (string) $len);
     }
 
     /** @param array<string,mixed> $meta */

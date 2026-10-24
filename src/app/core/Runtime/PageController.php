@@ -38,6 +38,7 @@ final class PageController
         private readonly Csrf $csrf,
         private readonly bool $devMode = false,
         private readonly ?\bFramework\Contracts\Logger $logger = null,
+        private readonly ?FileRefs $files = null,
     ) {
     }
 
@@ -53,8 +54,9 @@ final class PageController
         Csrf $csrf,
         bool $devMode = false,
         ?\bFramework\Contracts\Logger $logger = null,
+        ?FileRefs $files = null,
     ): void {
-        self::$ctx = new self($defs, $query, $authz, $hooks, $views, $layout, $session, $identity, $csrf, $devMode, $logger);
+        self::$ctx = new self($defs, $query, $authz, $hooks, $views, $layout, $session, $identity, $csrf, $devMode, $logger, $files);
     }
 
     /** @param array<string,string> $params */
@@ -149,7 +151,7 @@ final class PageController
     /** @param array<string,mixed> $def */
     private function repo(array $def, ?Identity $who): ModelRepository
     {
-        return new ModelRepository($def, $this->query, $this->authz, $who, $this->hooks, null, $this->targetResolver(), $this->devMode, $this->logger);
+        return new ModelRepository($def, $this->query, $this->authz, $who, $this->hooks, null, $this->targetResolver(), $this->devMode, $this->logger, $this->files);
     }
 
     private function doIndex(Request $r, string $name): Response
@@ -200,7 +202,7 @@ final class PageController
         $fields = $this->formFields($def, $comp);
         $vm = [];
         foreach ($fields as $n => $f) {
-            $vm[] = $this->fieldView($n, $f, $values[$n] ?? ($f['default'] ?? ''), $errors[$n] ?? [], $who);
+            $vm[] = $this->fieldView((string) $def['model'], $n, $f, $values[$n] ?? ($f['default'] ?? ''), $errors[$n] ?? [], $who);
         }
         $route = (string) $page['route'];
         $label = ucfirst((string) $def['model']);
@@ -209,7 +211,8 @@ final class PageController
             'action' => $id === null ? $route : "$route/$id",
             'back' => $route, 'fields' => $vm, 'formErrors' => $formErrors, 'csrf' => $this->csrf->token(),
         ]);
-        return $this->layoutResponse('Form ' . $label, $content, $name, $who, $status);
+        $hasUpload = array_filter($vm, static fn(array $v): bool => $v['isFile'] === true) !== [];
+        return $this->layoutResponse('Form ' . $label, $content, $name, $who, $status, $hasUpload);
     }
 
     /**
@@ -238,7 +241,7 @@ final class PageController
      * @param list<string> $errors
      * @return array<string,mixed>
      */
-    private function fieldView(string $n, array $f, mixed $v, array $errors, ?Identity $who): array
+    private function fieldView(string $model, string $n, array $f, mixed $v, array $errors, ?Identity $who): array
     {
         $t = (string) ($f['type'] ?? 'string');
         $val = is_scalar($v) ? (string) $v : '';
@@ -255,6 +258,11 @@ final class PageController
                 }
             }
         }
+        $file = is_array($f['upload'] ?? null) ? $f['upload'] : null;
+        $fid = $file !== null && preg_match('/^[a-f0-9]{32}$/D', $val) === 1 ? $val : '';
+        if ($file !== null) {
+            $val = $fid; // nilai selain fid tidak pernah dicetak kembali
+        }
         $inputType = ['integer' => 'number', 'date' => 'date', 'datetime' => 'datetime-local'][$t] ?? 'text';
         if ($t === 'datetime' && $val !== '') {
             $val = str_replace(' ', 'T', $val);
@@ -265,6 +273,8 @@ final class PageController
             'isBool' => $t === 'boolean', 'checked' => $val === '1' || $v === true,
             'isTextarea' => $t === 'text' || $t === 'json', 'isSelect' => $t === 'relasi', 'options' => $options,
             'errors' => $errors, 'hasErr' => $errors !== [],
+            'isFile' => $file !== null, 'fileModel' => $model, 'fileHref' => $fid === '' ? '' : '/files/' . $fid, 'hasFile' => $fid !== '',
+            'accept' => $file === null ? '' : implode(',', array_map('strval', (array) ($file['mimes'] ?? []))),
         ];
     }
 
@@ -281,7 +291,7 @@ final class PageController
         }
         [$def, $comp] = $mc;
         // Hanya field yang tampil di form yang boleh diisi (mass assignment, SEC-DATA-02).
-        $repo = new ModelRepository($def, $this->query, $this->authz, $who, $this->hooks, array_map('strval', array_keys($this->formFields($def, $comp))), $this->targetResolver(), $this->devMode, $this->logger);
+        $repo = new ModelRepository($def, $this->query, $this->authz, $who, $this->hooks, array_map('strval', array_keys($this->formFields($def, $comp))), $this->targetResolver(), $this->devMode, $this->logger, $this->files);
         $res = $id === null ? $repo->create($r->post) : $repo->update($id, $r->post);
         if (!$res->ok()) {
             return $this->doForm($name, $id, $r->post + $res->values, $res->errors, $res->formErrors, 422);
@@ -310,7 +320,7 @@ final class PageController
         return Response::redirect((string) $page['route']);
     }
 
-    private function layoutResponse(string $title, SafeHtml $content, string $active, ?Identity $who, int $status): Response
+    private function layoutResponse(string $title, SafeHtml $content, string $active, ?Identity $who, int $status, bool $upload = false): Response
     {
         $html = $this->layout->render('layout', [
             'title' => $title,
@@ -323,7 +333,7 @@ final class PageController
             'nav' => Navigation::build($this->defs->pages(), $who),
             'active' => $active,
             'flash' => $this->session->pullFlash(),
-            'scripts' => ['/assets/app.js'],
+            'scripts' => $upload ? ['/assets/app.js', '/assets/upload.js'] : ['/assets/app.js'],
             'bodyClass' => '',
             'content' => $content,
         ]);

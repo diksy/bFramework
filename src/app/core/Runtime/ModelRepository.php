@@ -26,6 +26,7 @@ final class ModelRepository
      * @param array<string,mixed> $def model ter-compile
      * @param list<string>|null $writable batasi field yang boleh diisi dari input (mis. field form halaman); null = semua non-guarded
      * @param (\Closure(string):(array<string,mixed>|null))|null $targets resolver definisi model target relasi; tanpa itu nilai relasi non-null ditolak (fail-closed)
+     * @param FileRefs|null $files penyimpanan file; null + nilai field file non-null = ditolak (fail-closed)
      */
     public function __construct(
         private readonly array $def,
@@ -37,6 +38,7 @@ final class ModelRepository
         private readonly ?\Closure $targets = null,
         private readonly bool $devMode = false,
         private readonly ?\bFramework\Contracts\Logger $logger = null,
+        private readonly ?FileRefs $files = null,
     ) {
         $own = Authorizer::ownerColumn($def);
         if ($own !== null && !isset($this->fields()[$own])) {
@@ -77,7 +79,7 @@ final class ModelRepository
     {
         $this->need(Action::Create);
         [$clean, $errors] = Validator::validate($this->validationDef(), $input, $this->devMode, $this->logger);
-        $errors = $errors + $this->relationErrors($clean);
+        $errors = $errors + $this->relationErrors($clean) + $this->fileErrors($clean, null);
         if ($errors !== []) {
             return new Result(null, $errors, [], $clean);
         }
@@ -89,6 +91,13 @@ final class ModelRepository
             return new Result(null, [], $msgs, $clean);
         }
         $id = $this->query->insert($this->table(), $clean);
+        $claimErr = $this->claimAll($clean, $id);
+        if ($claimErr !== []) {
+            // Race: fid diambil pihak lain di antara pemeriksaan dan claim. Batalkan baris (tanpa file yatim).
+            $this->query->delete($this->table(), new Where([['id', '=', $id]]));
+            $this->files?->deleteForRef($this->table(), $id);
+            return new Result(null, $claimErr, [], $clean);
+        }
         $after = $clean + ['id' => $id];
         $this->hooks->run($this->def, 'afterCreate', $after);
         $this->hooks->run($this->def, 'afterSave', $after);
@@ -100,11 +109,11 @@ final class ModelRepository
     {
         $this->need(Action::Update);
         // Baris harus ada di dalam scope sebelum input diproses (tak membocorkan eksistensi lewat error validasi).
-        if ($this->query->select($this->table(), ['id'], $this->byId(Action::Update, $id), null, 1, 0) === []) {
-            throw new NotFound();
-        }
-        [$clean, $errors] = Validator::validate($this->validationDef(), $input, $this->devMode, $this->logger);
-        $errors = $errors + $this->relationErrors($clean);
+        $current = $this->query->select($this->table(), $this->columns(), $this->byId(Action::Update, $id), null, 1, 0)[0] ?? throw new NotFound();
+        // Field file yang tidak dikirim = tetap (tidak divalidasi, tidak diubah).
+        $skip = array_values(array_filter(array_keys($this->fileFields()), static fn(string $n): bool => !array_key_exists($n, $input)));
+        [$clean, $errors] = Validator::validate($this->validationDef($skip), $input, $this->devMode, $this->logger);
+        $errors = $errors + $this->relationErrors($clean) + $this->fileErrors($clean, $current);
         if ($errors !== []) {
             return new Result($id, $errors, [], $clean);
         }
@@ -120,9 +129,20 @@ final class ModelRepository
         if ($msgs !== []) {
             return new Result($id, [], $msgs, $clean);
         }
+        $changed = $this->changedFiles($clean, $current);
+        $claimErr = $this->claimAll($changed, $id);
+        if ($claimErr !== []) {
+            return new Result($id, $claimErr, [], $clean);
+        }
         if ($clean !== []) {
             // rowCount 0 di MySQL juga berarti "tidak berubah"; keberadaan baris sudah dipastikan di atas.
             $this->query->update($this->table(), $clean, $this->byId(Action::Update, $id));
+        }
+        foreach (array_keys($this->fileFields()) as $n) {
+            $old = $current[$n] ?? null;
+            if (array_key_exists($n, $clean) && is_string($old) && $old !== '' && $clean[$n] !== $old) {
+                $this->releaseOwned($old, $id); // ganti/hapus file: berkas lama ikut terhapus
+            }
         }
         $this->hooks->run($this->def, 'afterUpdate', $data);
         $this->hooks->run($this->def, 'afterSave', $data);
@@ -142,6 +162,13 @@ final class ModelRepository
         }
         if ($this->query->delete($this->table(), $this->byId(Action::Delete, $id)) < 1) {
             throw new NotFound();
+        }
+        if ($this->files !== null) {
+            try {
+                $this->files->deleteForRef($this->table(), $id);
+            } catch (\Throwable $e) {
+                $this->logger?->error('hapus file baris gagal', ['model' => $this->table(), 'ex' => $e::class]);
+            }
         }
         $this->hooks->run($this->def, 'afterDelete', $rows[0]);
     }
@@ -285,13 +312,123 @@ final class ModelRepository
         }
     }
 
+    /** @return array<string,array<string,mixed>> field file (string + upload), tidak guarded */
+    private function fileFields(): array
+    {
+        $out = [];
+        foreach ($this->fields() as $n => $f) {
+            if (is_array($f) && is_array($f['upload'] ?? null) && ($f['guarded'] ?? false) !== true) {
+                $out[(string) $n] = $f;
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * Tiap fid baru harus: ada, milik user ini, belum ter-attach, mime/ukuran sesuai policy field.
+     * Semua kegagalan satu pesan generik (tak ada oracle eksistensi/kepemilikan fid).
+     *
+     * @param array<string,mixed> $clean
+     * @param array<string,mixed>|null $current baris saat ini (update); nilai yang sama dilewati
+     * @return array<string,list<string>>
+     */
+    private function fileErrors(array $clean, ?array $current): array
+    {
+        $errors = [];
+        $seen = [];
+        foreach ($this->fileFields() as $name => $f) {
+            $v = $clean[$name] ?? null;
+            if (!is_string($v) || $v === '' || ($current !== null && ($current[$name] ?? null) === $v)) {
+                continue;
+            }
+            $label = is_string($f['label'] ?? null) ? $f['label'] : ucfirst($name);
+            $policy = (array) $f['upload'];
+            $meta = $this->who !== null && $this->files !== null && !isset($seen[$v]) ? $this->files->meta($v) : null;
+            $seen[$v] = true;
+            $mimes = is_array($policy['mimes'] ?? null) ? $policy['mimes'] : [];
+            $ok = $meta !== null && $this->who !== null
+                && $meta['owner_id'] === $this->who->userId
+                && $meta['model'] === null
+                && in_array($meta['mime'], $mimes, true)
+                && is_int($policy['maxBytes'] ?? null) && $meta['size'] <= $policy['maxBytes'];
+            if (!$ok) {
+                $errors[$name][] = "$label tidak valid.";
+            }
+        }
+        return $errors;
+    }
+
+    /**
+     * File yang berubah pada update (nilai baru non-null berbeda dari baris saat ini).
+     *
+     * @param array<string,mixed> $clean
+     * @param array<string,mixed> $current
+     * @return array<string,mixed> nama field => fid baru, hanya yang perlu di-claim atau dilepas
+     */
+    private function changedFiles(array $clean, array $current): array
+    {
+        $out = [];
+        foreach (array_keys($this->fileFields()) as $n) {
+            if (array_key_exists($n, $clean) && is_string($clean[$n]) && $clean[$n] !== '' && ($current[$n] ?? null) !== $clean[$n]) {
+                $out[$n] = $clean[$n];
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * Claim atomik tiap fid ke baris ini. Gagal satu = lepas yang sudah di-claim pada panggilan ini.
+     *
+     * @param array<string,mixed> $values
+     * @return array<string,list<string>>
+     */
+    private function claimAll(array $values, int $id): array
+    {
+        $done = [];
+        foreach ($this->fileFields() as $name => $f) {
+            $v = $values[$name] ?? null;
+            if (!is_string($v) || $v === '') {
+                continue;
+            }
+            $ok = false;
+            try {
+                $ok = $this->who !== null && $this->files !== null && $this->files->claim($v, $this->who->userId, $this->table(), $id);
+            } catch (\Throwable $e) {
+                $this->logger?->error('claim file gagal', ['model' => $this->table(), 'ex' => $e::class]);
+            }
+            if (!$ok) {
+                foreach ($done as $d) {
+                    $this->files?->release($d);
+                }
+                $label = is_string($f['label'] ?? null) ? $f['label'] : ucfirst($name);
+                return [$name => ["$label tidak valid."]];
+            }
+            $done[] = $v;
+        }
+        return [];
+    }
+
+    /** Lepas file lama hanya bila memang ter-attach ke baris ini. */
+    private function releaseOwned(string $fid, int $id): void
+    {
+        try {
+            $m = $this->files?->meta($fid);
+            if ($m !== null && $m['model'] === $this->table() && $m['ref_id'] === $id) {
+                $this->files?->release($fid);
+            }
+        } catch (\Throwable $e) {
+            $this->logger?->error('release file gagal', ['model' => $this->table(), 'ex' => $e::class]);
+        }
+    }
+
     private function queryable(string $col): bool
     {
         if ($col === 'id') {
             return true;
         }
         $f = $this->fields()[$col] ?? null;
-        return is_array($f) && ($f['guarded'] ?? false) !== true;
+        // Field file (fid) tidak untuk sort/filter/agregat: akan membocorkan/mengurutkan id acak.
+        return is_array($f) && ($f['guarded'] ?? false) !== true && !isset($f['upload']);
     }
 
     private function fieldType(string $col): string
@@ -356,9 +493,10 @@ final class ModelRepository
     /**
      * Kolom owner diisi sistem (forceOwner), bukan pengguna: jangan wajibkan dalam validasi.
      *
+     * @param list<string> $skip field yang dikeluarkan dari validasi (field file tak dikirim saat update)
      * @return array<string,mixed>
      */
-    private function validationDef(): array
+    private function validationDef(array $skip = []): array
     {
         $col = Authorizer::ownerColumn($this->def);
         $def = $this->def;
@@ -368,6 +506,9 @@ final class ModelRepository
         }
         if ($col !== null && isset($fields[$col])) {
             $fields[$col]['required'] = false;
+        }
+        foreach ($skip as $n) {
+            unset($fields[$n]);
         }
         $def['fields'] = $fields;
         return $def;

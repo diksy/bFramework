@@ -39,7 +39,14 @@ final class DefinitionSchema
 
     private const FIELD_KEYS = [
         'type', 'label', 'target', 'required', 'min', 'max', 'default', 'format',
-        'guarded', 'unique', 'precision', 'scale',
+        'guarded', 'unique', 'precision', 'scale', 'upload',
+    ];
+    /** Aturan policy upload (duplikasi UploadPolicy; Runtime tidak boleh `use Upload`, ARCH-03). */
+    private const UPLOAD_MAX_BYTES = 104857600;
+    private const UPLOAD_FORBIDDEN_MIMES = [
+        'image/svg+xml', 'text/html', 'application/xhtml+xml', 'text/xml', 'application/xml',
+        'application/x-httpd-php', 'text/x-php', 'application/x-php', 'application/javascript',
+        'text/javascript', 'application/x-sh', 'application/x-msdownload', 'application/x-executable',
     ];
     private const COMPONENT_KEYS = [
         'component', 'span', 'label', 'title', 'text', 'agg', 'field', 'columns', 'fields',
@@ -205,6 +212,14 @@ final class DefinitionSchema
             $prec = 12;
             $scale = 2;
         }
+        $upload = null;
+        if (array_key_exists('upload', $f)) {
+            $upload = $this->uploadPolicy($f, $type, $src);
+            if ($upload !== null) {
+                $out['upload'] = $upload;
+                $length = 32; // kolom hanya menyimpan fid (32 hex)
+            }
+        }
         $default = null;
         if (array_key_exists('default', $f)) {
             $default = $this->defaultValue($type, $f['default'], $src . '/default');
@@ -227,6 +242,56 @@ final class DefinitionSchema
             'scale' => $scale,
             'unique' => $out['unique'] ?? false,
         ]];
+    }
+
+    /**
+     * Field file = string + `upload` {mimes, maxBytes}; kolom hanya berisi fid (ARCH-04: FieldType tidak bertambah).
+     *
+     * @param array<mixed> $f
+     * @return array{mimes:list<string>,maxBytes:int}|null
+     */
+    private function uploadPolicy(array $f, FieldType $type, string $src): ?array
+    {
+        $u = $f['upload'];
+        $s = "$src/upload";
+        if ($type !== FieldType::String) {
+            $this->error($s, '"upload" hanya untuk tipe string');
+            return null;
+        }
+        foreach (['unique', 'default', 'min', 'max'] as $k) {
+            if (array_key_exists($k, $f)) {
+                $this->error("$src/$k", 'Field upload tidak boleh memakai unique/default/min/max');
+                return null;
+            }
+        }
+        if (!is_array($u) || array_is_list($u)) {
+            $this->error($s, '"upload" harus objek {mimes, maxBytes}');
+            return null;
+        }
+        $this->unknownKeys($u, ['mimes', 'maxBytes'], $s);
+        $mimes = $u['mimes'] ?? null;
+        $max = $u['maxBytes'] ?? null;
+        if (!is_int($max) || $max < 1 || $max > self::UPLOAD_MAX_BYTES) {
+            $this->error("$s/maxBytes", 'maxBytes harus bilangan bulat 1..104857600');
+            return null;
+        }
+        if (!is_array($mimes) || !array_is_list($mimes) || $mimes === [] || count($mimes) > 20) {
+            $this->error("$s/mimes", 'mimes harus daftar 1..20 tipe mime');
+            return null;
+        }
+        $ok = [];
+        foreach ($mimes as $m) {
+            if (!is_string($m) || preg_match('#^[a-z0-9.+-]+/[a-z0-9.+-]+$#D', $m) !== 1) {
+                $this->error("$s/mimes", 'Mime tidak valid');
+                return null;
+            }
+            if (in_array($m, self::UPLOAD_FORBIDDEN_MIMES, true) || str_contains($m, 'svg') || str_contains($m, 'php')) {
+                $this->error("$s/mimes", 'Mime tidak diizinkan (SEC-FILE-02): ' . $m);
+                return null;
+            }
+            $ok[] = $m;
+        }
+        return ['mimes' => array_values(array_unique($ok)), 'maxBytes' => $max];
     }
 
     /** @return string|null nilai default sebagai string kolom */
@@ -317,7 +382,7 @@ final class DefinitionSchema
                 $this->error("$src/owner", 'owner harus nama kolom yang valid');
             } elseif (!isset($fields[$o])) {
                 $this->error("$src/owner", 'Kolom owner tidak ada di model');
-            } elseif (!in_array($fields[$o]['type'], ['integer', 'relasi'], true)) {
+            } elseif (!in_array($fields[$o]['type'], ['integer', 'relasi'], true) || isset($fields[$o]['upload'])) {
                 $this->error("$src/owner", 'Kolom owner harus bertipe integer atau relasi');
             } else {
                 $out['owner'] = $o;
@@ -641,9 +706,14 @@ final class DefinitionSchema
             if (isset($c['source']['sort']) && !isset($fields[ltrim((string) $c['source']['sort'], '-')]) && ltrim((string) $c['source']['sort'], '-') !== 'id') {
                 $this->error($src . '/source/sort', 'Field sort tidak ada di model');
             }
+            if (isset($c['source']['sort']) && isset($fields[ltrim((string) $c['source']['sort'], '-')]['upload'])) {
+                $this->error($src . '/source/sort', 'Field upload tidak boleh dipakai untuk sort');
+            }
             foreach (array_keys((array) ($c['source']['filter'] ?? [])) as $k) {
                 if (!isset($fields[(string) $k]) && $k !== 'id') {
                     $this->error($src . '/source/filter', 'Field filter tidak ada di model');
+                } elseif (isset($fields[(string) $k]['upload'])) {
+                    $this->error($src . '/source/filter', 'Field upload tidak boleh dipakai untuk filter');
                 }
             }
         }
@@ -656,6 +726,9 @@ final class DefinitionSchema
             if (!isset($fields[(string) $r])) {
                 $this->error($src, 'Field "' . (string) $r . '" tidak ada di model sumber');
             }
+        }
+        if (isset($c['field']) && isset($fields[(string) $c['field']]['upload'])) {
+            $this->error($src . '/field', 'Field upload tidak boleh dipakai untuk agregat');
         }
         if (($c['agg'] ?? 'count') !== 'count' && !isset($c['field'])) {
             $this->error($src . '/agg', 'Agregat selain count butuh "field"');

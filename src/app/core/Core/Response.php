@@ -20,7 +20,18 @@ final class Response
         public readonly int $status,
         public readonly array $headers,
         public readonly array $cookies = [],
+        public readonly ?string $file = null,
     ) {
+    }
+
+    /**
+     * Respons dari berkas, dialirkan per potongan saat send() (tidak memuat seluruh isi ke memori).
+     * Pemanggil bertanggung jawab atas path (sudah divalidasi) dan header Content-Length.
+     */
+    public static function file(string $path, string $contentType, int $status = 200): self
+    {
+        self::assertHeaderSafe($contentType);
+        return new self('', $status, ['Content-Type' => $contentType], [], $path);
     }
 
     public static function html(string $body, int $status = 200): self
@@ -65,7 +76,7 @@ final class Response
         self::assertHeaderSafe($value);
         $headers = array_filter($this->headers, static fn(string $k): bool => strcasecmp($k, $name) !== 0, ARRAY_FILTER_USE_KEY);
         $headers[$name] = $value;
-        return new self($this->body, $this->status, $headers, $this->cookies);
+        return new self($this->body, $this->status, $headers, $this->cookies, $this->file);
     }
 
     /**
@@ -100,7 +111,7 @@ final class Response
         }
         $cookies = $this->cookies;
         $cookies[] = ['name' => $name, 'value' => $value, 'options' => $options];
-        return new self($this->body, $this->status, $this->headers, $cookies);
+        return new self($this->body, $this->status, $this->headers, $cookies, $this->file);
     }
 
     public function send(): void
@@ -112,13 +123,28 @@ final class Response
         foreach ($this->cookies as $c) {
             setcookie($c['name'], $c['value'], $c['options']);
         }
+        if ($this->file !== null) {
+            $fh = @fopen($this->file, 'rb');
+            if ($fh !== false) {
+                while (!feof($fh)) {
+                    $chunk = fread($fh, 1048576);
+                    if ($chunk === false || $chunk === '') {
+                        break;
+                    }
+                    echo $chunk;
+                    flush();
+                }
+                fclose($fh);
+            }
+            return;
+        }
         echo $this->body;
     }
 
     /** Dipakai Kernel untuk HEAD: status dan header sama, tanpa body. */
     public function withoutBody(): self
     {
-        return new self('', $this->status, $this->headers, $this->cookies);
+        return new self('', $this->status, $this->headers, $this->cookies, null);
     }
 
     /** @param list<string> $allowedHosts */
