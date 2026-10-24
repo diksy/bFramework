@@ -21,6 +21,7 @@ use InvalidArgumentException;
 final class AuthManager
 {
     private const AUTH_AT = '_auth_at';
+    private const STEPUP_AT = '_stepup_at';
 
     /** @var (\Closure(Identity):bool)|null guard sesi tambahan dari driver (SSO-01/17): false = sesi tidak sah */
     private ?\Closure $guard = null;
@@ -69,8 +70,36 @@ final class AuthManager
         $this->session->regenerate();
         $this->csrf->rotate();
         $this->identity->set($id);
+        $this->session->forget(self::STEPUP_AT);
         $this->session->set(self::AUTH_AT, $this->clock->now()->getTimestamp());
         return $id;
+    }
+
+    /**
+     * Catat re-auth (step-up) segar di sesi ini. Sesi diregenerasi + CSRF diputar (kenaikan hak).
+     * Waktu hanya berlaku untuk sesi ini; dibersihkan saat login/ganti peran/logout.
+     */
+    public function markStepUp(): void
+    {
+        $this->session->regenerate();
+        $this->csrf->rotate();
+        $this->session->set(self::STEPUP_AT, $this->clock->now()->getTimestamp());
+    }
+
+    public function stepUpAt(): ?int
+    {
+        $t = $this->session->get(self::STEPUP_AT);
+        return is_int($t) ? $t : null;
+    }
+
+    /**
+     * Perubahan 2FA: cabut sesi lain milik akun (pw_changed_at dinaikkan) dan pertahankan sesi ini
+     * dengan memperbarui waktu autentikasinya.
+     */
+    public function revokeOtherSessions(int $userId): void
+    {
+        $this->accounts->touchCredentials($userId);
+        $this->session->set(self::AUTH_AT, $this->clock->now()->getTimestamp());
     }
 
     public function current(): ?Identity
@@ -111,6 +140,7 @@ final class AuthManager
         }
         $this->session->regenerate();
         $this->csrf->rotate();
+        $this->session->forget(self::STEPUP_AT);
         $new = new Identity($id->userId, $id->roles, $role, $id->amr, $id->ssoSid);
         $this->identity->set($new);
         return $new;

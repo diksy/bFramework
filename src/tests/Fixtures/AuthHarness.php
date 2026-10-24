@@ -20,6 +20,7 @@ use bFramework\Auth\Mailer;
 use bFramework\Auth\OneTimeToken;
 use bFramework\Auth\RememberMe;
 use bFramework\Auth\SecretVault;
+use bFramework\Auth\StepUp;
 use bFramework\Auth\TwoFactor;
 use bFramework\Core\Csrf;
 use bFramework\Core\FileSessionStore;
@@ -147,14 +148,15 @@ final class AuthHarness
             $this->logger,
         );
         $views = new Template(dirname(__DIR__, 2) . '/app/core/Auth/views', $this->dir . '/views');
+        $stepUp = new StepUp($manager, $this->accounts, new Authorizer(), $session, $this->clock);
         $admin = new AdminController(
             $manager, $this->users(), new RoleStore($this->conn), $this->tokens(), new Mailer($this->mail, $this->logger),
             $this->deferred, $session, $csrf, $views,
             new Template(dirname(__DIR__, 2) . '/app/core/Core/views', $this->dir . '/views'),
-            new Authorizer(), static fn(): array => [],
+            new Authorizer(), static fn(): array => [], $stepUp,
             ['appUrl' => 'https://app.contoh.test', 'from' => 'noreply@contoh.test'], $this->logger,
         );
-        $kit = new AuthKit($session, $jar, $csrf, $manager, $remember, $driver, $this->deferred, $admin);
+        $kit = new AuthKit($session, $jar, $csrf, $manager, $remember, $driver, $this->deferred, $admin, $stepUp);
         $router = new Router();
         $driver->registerRoutes($router);
         $admin->registerRoutes($router);

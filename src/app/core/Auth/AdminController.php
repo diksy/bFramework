@@ -40,6 +40,7 @@ final class AdminController
 
     /**
      * @param \Closure():array<string,array<string,mixed>> $pages halaman ter-compile untuk menu samping
+     * @param StepUp $stepUp gerbang re-auth untuk sesi tanpa password segar
      * @param array<string,mixed> $opts appUrl (wajib), from, fromName, resetTtl
      */
     public function __construct(
@@ -55,6 +56,7 @@ final class AdminController
         private readonly Template $layout,
         private readonly Authorizer $authz,
         private readonly \Closure $pages,
+        private readonly StepUp $stepUp,
         array $opts,
         private readonly ?Logger $logger = null,
     ) {
@@ -103,6 +105,9 @@ final class AdminController
         }
         if (!$this->authz->can(self::ACCESS, $action, $who)) {
             throw new Forbidden('Akses ditolak');
+        }
+        if (!$this->stepUp->satisfied($who)) {
+            return $this->stepUp->redirect($r); // sesi ingat-saya: wajib re-auth (S3)
         }
         /** @var Response */
         return $this->$method($r, $p, $who);

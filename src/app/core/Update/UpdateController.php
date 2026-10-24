@@ -7,6 +7,7 @@ namespace bFramework\Update;
 defined('APP_BOOTED') || exit;
 
 use bFramework\Auth\AuthManager;
+use bFramework\Auth\StepUp;
 use bFramework\Contracts\Action;
 use bFramework\Contracts\Forbidden;
 use bFramework\Contracts\Identity;
@@ -43,16 +44,17 @@ final class UpdateController
         private readonly CoreManifest $manifest,
         private readonly UpdatePackage $package,
         private readonly \Closure $pages,
+        private readonly StepUp $stepUp,
         private readonly ?Logger $logger = null,
     ) {
     }
 
     public function registerRoutes(Router $router): void
     {
-        $router->add('GET', '/admin/pembaruan', fn(Request $r, array $p = []): Response => $this->status());
+        $router->add('GET', '/admin/pembaruan', fn(Request $r, array $p = []): Response => $this->status($r));
     }
 
-    private function status(): Response
+    private function status(Request $r): Response
     {
         $who = $this->auth->current();
         if ($who === null) {
@@ -60,6 +62,9 @@ final class UpdateController
         }
         if (!$this->authz->can(self::ACCESS, Action::Read, $who)) {
             throw new Forbidden('Akses ditolak');
+        }
+        if (!$this->stepUp->satisfied($who)) {
+            return $this->stepUp->redirect($r);
         }
         if (!$this->limiter->hit('update-status:' . $who->userId, 30, 300)) {
             throw new TooManyRequests();

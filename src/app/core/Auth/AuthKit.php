@@ -28,6 +28,7 @@ final readonly class AuthKit
         public AuthDriver $driver,
         public Deferred $deferred,
         public ?AdminController $admin = null,
+        public ?StepUp $stepUp = null,
     ) {
     }
 

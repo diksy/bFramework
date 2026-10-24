@@ -323,6 +323,7 @@ function buildUpdateStatus(string $appDir, Auth\AuthKit $auth, Runtime\Definitio
         new Update\CoreManifest($root),
         new Update\UpdatePackage($root, Update\UpdateKey::raw(), $logger),
         static fn(): array => $defs->pages(),
+        $auth->stepUp ?? throw new \LogicException('StepUp belum dirakit'),
         $logger,
     );
 }
@@ -425,6 +426,7 @@ function buildAuth(string $appDir, Runtime\Connection $conn, bool $https, ?Contr
         });
     }
     $defs = new Runtime\Definitions(new Runtime\CacheStore($appDir . '/storage/cache'));
+    $stepUp = new Auth\StepUp($manager, $accounts, new Runtime\Authorizer(), $session, $clock);
     $admin = new Auth\AdminController(
         $manager,
         $users,
@@ -438,6 +440,7 @@ function buildAuth(string $appDir, Runtime\Connection $conn, bool $https, ?Contr
         new Core\Template($appDir . '/core/Core/views', $appDir . '/storage/cache/views'),
         new Runtime\Authorizer(),
         static fn(): array => $defs->pages(),
+        $stepUp,
         [
             'appUrl' => Core\Config::get('APP_URL', ''),
             'from' => Core\Config::get('MAIL_FROM', 'noreply@example.invalid'),
@@ -448,7 +451,7 @@ function buildAuth(string $appDir, Runtime\Connection $conn, bool $https, ?Contr
     $driver = $mode === 'local'
         ? $local
         : buildSso($appDir, $conn, $mode, $ssoRaw, $key, $manager, $users, $accounts, $hasher, $throttle, $session, $csrf, $views, $layout, $clock, $mode === 'hybrid' ? $local : null, $logger);
-    return new Auth\AuthKit($session, $jar, $csrf, $manager, $remember, $driver, $deferred, $admin);
+    return new Auth\AuthKit($session, $jar, $csrf, $manager, $remember, $driver, $deferred, $admin, $stepUp);
 }
 
 /**

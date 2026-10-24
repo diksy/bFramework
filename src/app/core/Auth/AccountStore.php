@@ -104,6 +104,12 @@ final class AccountStore
         $this->q->update(AuthTables::USERS, ['password_hash' => $hash, 'pw_changed_at' => $this->now()], new Where([['id', '=', $userId]]));
     }
 
+    /** Tandai perubahan kredensial (mis. 2FA) tanpa mengganti hash: sesi yang dibuat sebelum detik ini tidak sah lagi. */
+    public function touchCredentials(int $userId): void
+    {
+        $this->q->update(AuthTables::USERS, ['pw_changed_at' => $this->now()], new Where([['id', '=', $userId]]));
+    }
+
     /** Rehash transparan setelah login; tidak mengubah pw_changed_at. */
     public function updateHash(int $userId, string $hash): void
     {
