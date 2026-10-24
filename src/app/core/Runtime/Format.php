@@ -42,6 +42,9 @@ final class Format
         if (is_array($v) || is_object($v)) {
             return '-';
         }
+        if (is_array($field['upload'] ?? null)) {
+            return 'Berkas terlampir'; // fid tidak ditampilkan
+        }
         return match ($type) {
             'boolean' => (int) $v === 1 ? 'Ya' : 'Tidak',
             'decimal', 'integer' => self::number(is_int($v) ? $v : (string) $v, $format),

@@ -18,3 +18,7 @@ Nama file = `model` = nama tabel, `^[a-z][a-z0-9_]{0,40}$`. Dicadangkan: users, 
 - Model ter-compile: `model, table, fields, columns (spesifikasi kolom), hooks{event:{ref,class,method,_src}}, access, _src`.
 - `Definitions(CacheStore)`: `model(n)`, `page(n)`, `pages()`, `routes()` (baris untuk `Router::fromCompiled`; handler `bFramework\Runtime\PageController::{index,form,save,delete}`, `name` = `<halaman>.<aksi>`, kunci `page` memuat nama halaman), `access()` (`['models'=>..,'pages'=>..]`), `auth()`, `sql(n)`, `tables()` (TableSpec untuk Migrator), `allowlist()` (IdentifierAllowlist untuk Query; memuat semua model).
 - Build: `Compiler(CacheStore, ?extDir)->build($defDir, Dialect)`; `isStale()` untuk mode development. Versi lama dibersihkan `CacheStore::gc()` (aktif + 2 terbaru).
+
+## Field file (M12b, F9)
+Definisi: `{"type":"string","upload":{"mimes":["image/png"],"maxBytes":1048576}}` (SVG/HTML/XML/skrip ditolak saat compile; tanpa `unique`/`default`/`min`/`max`; bukan kolom owner; tak bisa sort/filter/agregat). Kolom model hanya menyimpan fid (32 hex).
+Alur dua langkah: `POST /files` (`file`, `model`, `field`, `_csrf`; login + hak Create/Update) mengembalikan JSON `{id,mime,size,name}`; fid dikirim bersama form dan di-claim atomik oleh `ModelRepository` (milik pengunggah, belum ter-attach). Ganti/kosongkan field atau hapus baris menghapus berkas. Hook tidak perlu menyentuh Upload; antarmuka Runtime: `Runtime\FileRefs`.

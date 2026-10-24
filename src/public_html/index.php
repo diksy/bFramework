@@ -48,7 +48,15 @@ if (is_string($appUrl) && $appUrl !== '') {
     $https = is_string($httpsEnv) && $httpsEnv !== '' && strtolower($httpsEnv) !== 'off';
     $conn = bFramework\connectDatabase($app);
     $auth = bFramework\buildAuth($app, $conn, $https, $logger);
-    bFramework\configureRuntime($app, $conn, $auth->session, $logger);
+    $defs = new bFramework\Runtime\Definitions(new bFramework\Runtime\CacheStore($app . '/storage/cache'));
+    [$uploads, $fileCtl] = bFramework\buildUploads($app, $conn, $defs, new bFramework\Runtime\CurrentIdentity($auth->session), $logger);
+    bFramework\configureRuntime($app, $conn, $auth->session, $logger, $uploads);
+    $fileCtl->registerRoutes($router);
+    if (random_int(1, 200) === 1) {
+        $auth->deferred->push(static function () use ($uploads): void {
+            $uploads->purgeOrphans(86400); // upload yang tak pernah di-submit (setelah respons dikirim)
+        });
+    }
     $auth->driver->registerRoutes($router);
     $auth->admin?->registerRoutes($router);
     $middleware = $auth->middleware($router, $hosts, Config::devMode());
