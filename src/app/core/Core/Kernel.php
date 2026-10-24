@@ -18,6 +18,8 @@ final class Kernel
         private readonly Router $router,
         private readonly array $middleware = [],
         private readonly ?Logger $logger = null,
+        /** Halaman error (M5, ErrorHandler::page); null = halaman minimal bawaan. */
+        private readonly ?\Closure $errorPage = null,
     ) {
     }
 
@@ -27,10 +29,10 @@ final class Kernel
         try {
             $request = $factory !== null ? $factory() : Request::fromGlobals();
         } catch (HttpException $e) {
-            return self::errorResponse($e->status);
+            return $this->errorResponse($e->status);
         } catch (Throwable $e) {
-            $this->logger?->error('Request gagal dibentuk', ['class' => $e::class]);
-            return self::errorResponse(400);
+            $this->logger?->error('Request gagal dibentuk', ErrorHandler::context($e));
+            return $this->errorResponse(400);
         }
         return $this->handle($request);
     }
@@ -61,15 +63,27 @@ final class Kernel
         try {
             return $fn();
         } catch (HttpException $e) {
-            return self::errorResponse($e->status);
+            return $this->errorResponse($e->status);
         } catch (Throwable $e) {
-            $this->logger?->error('Unhandled exception', ['class' => $e::class]);
-            return self::errorResponse(500);
+            $this->logger?->error('Unhandled exception', ErrorHandler::context($e));
+            return $this->errorResponse(500);
         }
     }
 
-    /** Halaman error minimal dan generik; M5 menggantikannya dengan template. */
-    private static function errorResponse(int $status): Response
+    private function errorResponse(int $status): Response
+    {
+        if ($this->errorPage !== null) {
+            try {
+                return ($this->errorPage)($status);
+            } catch (Throwable) {
+                $this->logger?->error('Halaman error gagal dibuat');
+            }
+        }
+        return self::fallbackResponse($status);
+    }
+
+    /** Halaman error minimal dan generik, dipakai bila ErrorHandler tidak terpasang. */
+    private static function fallbackResponse(int $status): Response
     {
         $msg = match ($status) {
             400 => 'Permintaan tidak valid',
