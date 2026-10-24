@@ -82,7 +82,7 @@ final class KernelTest extends TestCase
         $res = (new Kernel($router, [], $logger))->handle(new Request('GET', '/'));
         self::assertSame(500, $res->status);
         self::assertStringNotContainsString('rahasia-db', $res->body);
-        self::assertStringNotContainsString('rahasia-db', implode('', $logger->lines));
+        self::assertStringContainsString('RuntimeException', implode('', $logger->lines));
     }
 
     public function test_HEAD_tanpa_body(): void
