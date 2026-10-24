@@ -353,7 +353,7 @@ function connectDatabase(string $appDir): Runtime\Connection
  * Merakit autentikasi lokal (M10): sesi file + cookie, AuthManager, LocalDriver, ingat-saya, token,
  * Mailer, TOTP (hanya bila APP_KEY >= 32 karakter), dan antrean pekerjaan tunda.
  */
-function buildAuth(string $appDir, Runtime\Connection $conn, bool $https, ?Contracts\Logger $logger = null): Auth\AuthKit
+function buildAuth(string $appDir, Runtime\Connection $conn, bool $https, ?Contracts\Logger $logger = null, ?Contracts\Logger $auditLogger = null): Auth\AuthKit
 {
     $clock = new Auth\SystemClock();
     $jar = new Auth\CookieJar();
@@ -446,6 +446,7 @@ function buildAuth(string $appDir, Runtime\Connection $conn, bool $https, ?Contr
             'from' => Core\Config::get('MAIL_FROM', 'noreply@example.invalid'),
         ],
         $logger,
+        $auditLogger,
     );
     // M15 (SSO-19): kode SSO + library JWT hanya dimuat/dipasang bila driver bikinin_sso atau hybrid.
     $driver = $mode === 'local'

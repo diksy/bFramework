@@ -29,12 +29,18 @@ final class Kernel
         try {
             $request = $factory !== null ? $factory() : Request::fromGlobals();
         } catch (HttpException $e) {
-            return $this->errorResponse($e->status);
+            return $this->early($this->errorResponse($e->status));
         } catch (Throwable $e) {
             $this->logger?->error('Request gagal dibentuk', ErrorHandler::context($e));
-            return $this->errorResponse(400);
+            return $this->early($this->errorResponse(400));
         }
         return $this->handle($request);
+    }
+
+    /** Respons sebelum rantai middleware ada (S5): header keamanan dipasang langsung. */
+    private function early(Response $res): Response
+    {
+        return SecurityHeaders::apply($res, TransportPolicy::isHttps($_SERVER));
     }
 
     public function handle(Request $request): Response

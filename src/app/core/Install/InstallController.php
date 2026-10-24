@@ -14,6 +14,7 @@ use bFramework\Core\RateLimiter;
 use bFramework\Core\Request;
 use bFramework\Core\Response;
 use bFramework\Core\Router;
+use bFramework\Core\TransportPolicy;
 use bFramework\Core\Template;
 
 /** GET|POST /install (CSRF aktif lewat middleware, rate limit per IP). Setelah terpasang: 404. */
@@ -30,6 +31,8 @@ final class InstallController
         private readonly int $rateWindow = 900,
     ) {
     }
+
+    private const TLS_WARNING = 'APP_URL berskema https tetapi permintaan ini tampak HTTP (TLS diputus di proxy/CDN?). Cookie sesi tetap dipaksa Secure/__Host- dan HSTS dikirim; atur TRUSTED_PROXIES bila perlu.';
 
     public function registerRoutes(Router $router): void
     {
@@ -92,6 +95,8 @@ final class InstallController
         if ($url !== null && $url['authority'] !== $reqHost) {
             return $this->form($f, ['APP_URL harus sama dengan alamat yang sedang dipakai membuka installer.'], 422);
         }
+        // S9: APP_URL https tetapi permintaan ini tampak HTTP (TLS diputus di proxy/CDN, atau akses tanpa TLS).
+        $tlsWarn = TransportPolicy::isHttpsUrl($f['app_url']) && !$r->isHttps;
         $in = new InstallInput(
             appUrl: rtrim($f['app_url'], '/'),
             adminEmail: $f['admin_email'],
@@ -119,17 +124,17 @@ final class InstallController
             if ($e->status === 404) {
                 throw new NotFound();
             }
-            return $this->form($f, array_merge([$e->getMessage()], $e->errors), $e->status);
+            return $this->form($f, array_merge([$e->getMessage()], $e->errors), $e->status, $tlsWarn);
         }
         // Rahasia (tautan reset) hanya tampil di respons ini; jangan di-cache.
-        return $this->page('done', 'Instalasi selesai', ['resetUrl' => $res->resetUrl], 200);
+        return $this->page('done', 'Instalasi selesai', ['resetUrl' => $res->resetUrl, 'tlsWarn' => $tlsWarn], 200);
     }
 
     /**
      * @param array<string,string> $values nilai non-rahasia untuk diisi ulang
      * @param list<string> $errors
      */
-    private function form(array $values, array $errors, int $status): Response
+    private function form(array $values, array $errors, int $status, bool $tlsWarn = false): Response
     {
         $values += ['smtp_secure' => 'starttls', 'db_driver' => 'sqlite'];
         $canary = $this->installer->ensureCanary();
@@ -140,7 +145,10 @@ final class InstallController
             'sel' => ['sqlite' => $values['db_driver'] !== 'mysql', 'mysql' => $values['db_driver'] === 'mysql',
                 'starttls' => $values['smtp_secure'] !== 'tls', 'tls' => $values['smtp_secure'] === 'tls'],
             'errors' => $errors,
-            'checks' => array_map(static fn(Check $c): array => ['ok' => $c->ok, 'warn' => !$c->ok && !$c->fatal, 'msg' => $c->msg], $this->installer->checks()),
+            'checks' => array_merge(
+                array_map(static fn(Check $c): array => ['ok' => $c->ok, 'warn' => !$c->ok && !$c->fatal, 'msg' => $c->msg], $this->installer->checks()),
+                $tlsWarn ? [['ok' => false, 'warn' => true, 'msg' => self::TLS_WARNING]] : [],
+            ),
             'tokenFile' => 'app/storage/' . Installer::TOKEN_FILE . '<kode-acak>',
             'blocked' => $this->installer->canaryRequired() && !$this->installer->canaryProven(),
         ], $status);

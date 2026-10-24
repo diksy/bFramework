@@ -69,7 +69,7 @@ final class ErrorHandler
     {
         $this->logger->error('Exception tidak tertangkap', self::context($e));
         if (!headers_sent()) {
-            $this->page(500)->send();
+            $this->fatalResponse()->send();
         }
     }
 
@@ -79,6 +79,8 @@ final class ErrorHandler
         if ($err === null || !in_array($err['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR], true)) {
             return;
         }
+        // Fatal bisa terjadi di tengah write() logger: lepas flag re-entrancy + flock basi agar fatal tetap tercatat (S8b).
+        RotatingFileLogger::recoverAfterFatal();
         $this->logger->error('Fatal error', [
             'errno' => $err['type'],
             'file' => basename($err['file']),
@@ -86,8 +88,14 @@ final class ErrorHandler
             'pesan' => $err['message'],
         ]);
         if (!headers_sent()) {
-            $this->page(500)->send();
+            $this->fatalResponse()->send();
         }
+    }
+
+    /** Respons 500 untuk jalur di luar Kernel/middleware (exception global, fatal): lengkap dengan header keamanan (S5). */
+    public function fatalResponse(): Response
+    {
+        return SecurityHeaders::apply($this->page(500), TransportPolicy::isHttps($_SERVER));
     }
 
     /** Halaman error generik untuk status HTTP tertentu (dipakai Kernel). Tidak pernah melempar. */

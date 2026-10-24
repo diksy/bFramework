@@ -59,6 +59,8 @@ final class AdminController
         private readonly StepUp $stepUp,
         array $opts,
         private readonly ?Logger $logger = null,
+        /** Kanal audit terpisah (berkas + kuota rotasi sendiri, S8a); null = pakai $logger. */
+        private readonly ?Logger $auditLogger = null,
     ) {
         $url = rtrim(is_string($opts['appUrl'] ?? null) ? $opts['appUrl'] : '', '/');
         if (preg_match('#^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?$#D', $url) !== 1) {
@@ -403,7 +405,7 @@ final class AdminController
     /** @param array<string,scalar> $extra tanpa data sensitif (tanpa email/nama/hash) */
     private function audit(string $event, Identity $who, int $target, array $extra): void
     {
-        $this->logger?->info('audit: ' . $event, ['actor_id' => $who->userId, 'actor_role' => $who->activeRole, 'target_id' => $target] + $extra);
+        ($this->auditLogger ?? $this->logger)?->info('audit: ' . $event, ['actor_id' => $who->userId, 'actor_role' => $who->activeRole, 'target_id' => $target] + $extra);
     }
 
     private function fail(string $to, string $msg): Response

@@ -385,6 +385,8 @@ final class PageController
             // Halaman anonim dilayani sama persis dengan versi cache: tanpa atribut nonce (script-src 'self' cukup untuk /assets/).
             $out = str_replace(' nonce="' . Nonce::current() . '"', '', $out);
         }
-        return Response::html($out, $status);
+        $res = Response::html($out, $status);
+        // S6: halaman pengguna login jangan tersimpan di cache browser/proxy; halaman anonim (cache:true) tidak terpengaruh.
+        return $who !== null ? $res->withHeader('Cache-Control', 'no-store')->withHeader('Pragma', 'no-cache') : $res;
     }
 }
