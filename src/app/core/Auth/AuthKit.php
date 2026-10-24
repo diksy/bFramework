@@ -26,6 +26,7 @@ final readonly class AuthKit
         public RememberMe $remember,
         public AuthDriver $driver,
         public Deferred $deferred,
+        public ?AdminController $admin = null,
     ) {
     }
 

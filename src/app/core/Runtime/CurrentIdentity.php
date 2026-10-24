@@ -26,9 +26,13 @@ final class CurrentIdentity
             return null;
         }
         $sid = $d['ssoSid'] ?? null;
+        $roles = array_values(array_filter($d['roles'], 'is_string'));
+        if (!in_array($d['activeRole'], $roles, true)) {
+            return null; // peran aktif harus salah satu peran yang dimiliki (F16)
+        }
         return new Identity(
             $d['userId'],
-            array_values(array_filter($d['roles'], 'is_string')),
+            $roles,
             $d['activeRole'],
             array_values(array_filter($d['amr'], 'is_string')),
             is_string($sid) ? $sid : null,
@@ -37,6 +41,9 @@ final class CurrentIdentity
 
     public function set(Identity $i): void
     {
+        if (!in_array($i->activeRole, $i->roles, true)) {
+            throw new \InvalidArgumentException('Peran aktif harus salah satu peran yang dimiliki');
+        }
         $this->session->set(self::KEY, [
             'userId' => $i->userId,
             'roles' => $i->roles,
