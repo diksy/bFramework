@@ -2,5 +2,21 @@
 DirectoryIndex index.php
 Options -Indexes
 RewriteEngine On
+
+# SEC-PER-01: blokir dotfile (termasuk .env, .git), .json, .sqlite, .log di mana pun (403)
+RewriteRule (^|/)\. - [F,L]
+RewriteRule \.(json|sqlite|sqlite3|log)$ - [F,L]
+
 RewriteCond %{REQUEST_URI} !^/assets/
 RewriteRule !^index\.php$ index.php [L]
+
+# SEC-PER-01 (lapis kedua bila mod_rewrite tidak aktif)
+<FilesMatch "(^\.|\.(json|sqlite|sqlite3|log)$)">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>
