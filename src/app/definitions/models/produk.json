@@ -1,0 +1,42 @@
+{
+  "model": "produk",
+  "fields": {
+    "nama": {
+      "type": "string",
+      "label": "Nama produk",
+      "required": true,
+      "max": 100
+    },
+    "harga": {
+      "type": "decimal",
+      "label": "Harga",
+      "min": 0,
+      "format": "rupiah"
+    },
+    "stok": {
+      "type": "integer",
+      "label": "Stok",
+      "min": 0,
+      "default": 0
+    },
+    "kategori": {
+      "type": "relasi",
+      "label": "Kategori",
+      "target": "kategori"
+    },
+    "aktif": {
+      "type": "boolean",
+      "label": "Aktif",
+      "default": true
+    }
+  },
+  "hooks": {
+    "beforeSave": "ProdukHooks::validasiStok"
+  },
+  "access": {
+    "read": "*",
+    "write": [
+      "admin"
+    ]
+  }
+}
